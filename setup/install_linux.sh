@@ -1,33 +1,50 @@
 #!/bin/bash
+
 echo ""
 echo "=========================================="
-echo "  Bot Factory — Установка (Linux)"
+echo "  Bot Factory - Install (Linux)"
 echo "=========================================="
 echo ""
 
-# проверяем есть ли Python
+# check Python3
 if ! command -v python3 &> /dev/null; then
-    echo "❌ Python3 не найден!"
+    echo "[!] Python3 not found. Installing..."
     echo ""
-    echo "Установи:"
-    echo "  Ubuntu/Debian: sudo apt install python3 python3-venv python3-pip"
-    echo "  Arch:          sudo pacman -S python"
-    echo "  Fedora:        sudo dnf install python3"
+
+    if command -v apt &> /dev/null; then
+        sudo apt update && sudo apt install -y python3 python3-venv python3-pip
+
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y python3 python3-pip
+
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -Sy --noconfirm python python-pip
+
+    else
+        echo "[ERROR] Unknown package manager"
+        echo "Install Python3 manually and run again"
+        exit 1
+    fi
+
     echo ""
-    echo "После установки — запусти этот скрипт снова."
+fi
+
+# verify
+if ! command -v python3 &> /dev/null; then
+    echo "[ERROR] Python3 still not found after install"
     exit 1
 fi
 
-echo "✅ Python3 найден!"
-python3 --version
+echo "[OK] $(python3 --version)"
 echo ""
 
-# проверяем python3-venv
+# check venv module
 if ! python3 -m venv --help &> /dev/null; then
-    echo "❌ Модуль venv не найден!"
-    echo "  Установи: sudo apt install python3-venv"
-    exit 1
+    echo "[!] Installing python3-venv..."
+    if command -v apt &> /dev/null; then
+        sudo apt install -y python3-venv
+    fi
 fi
 
-# запускаем умный установщик
+# run setup
 python3 "$(dirname "$0")/setup.py"

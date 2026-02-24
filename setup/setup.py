@@ -1,7 +1,6 @@
 """
-Bot Factory — Установка
-Работает на Windows, Linux, macOS
-Запуск: python setup/setup.py (из корня проекта)
+Bot Factory — Setup
+Works on Windows, Linux, macOS
 """
 
 import subprocess
@@ -10,83 +9,89 @@ import os
 import platform
 
 def run(cmd):
-    """Выполняет команду"""
-    print(f"  → {cmd}")
+    print(f"  > {cmd}")
     result = subprocess.run(cmd, shell=True)
     return result.returncode == 0
 
 def main():
     system = platform.system()
-    
-    # определяем корень проекта (на уровень выше от setup/)
+
+    # project root = one level up from setup/
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(project_root)
-    
+
     print("=" * 50)
-    print("  🤖 Bot Factory — Установка")
-    print(f"  Система: {system}")
+    print("  Bot Factory — Setup")
+    print(f"  OS: {system}")
     print(f"  Python: {sys.version.split()[0]}")
-    print(f"  Папка: {project_root}")
+    print(f"  Folder: {project_root}")
     print("=" * 50)
     print()
 
-    # проверяем Python
+    # check Python version
     if sys.version_info < (3, 9):
-        print("❌ Нужен Python 3.9+")
-        print("   https://www.python.org/downloads/")
-        input("\nНажми Enter...")
+        print("[ERROR] Need Python 3.9+")
+        print("  https://www.python.org/downloads/")
+        input("\nPress Enter...")
         sys.exit(1)
 
-    # проверяем requirements.txt
+    if sys.version_info >= (3, 13):
+        print("[ERROR] Python 3.13+ is too new, libraries don't support it yet")
+        print("  Install Python 3.12:")
+        print("  https://www.python.org/downloads/release/python-31210/")
+        input("\nPress Enter...")
+        sys.exit(1)
+
+    # check requirements.txt
     if not os.path.exists("requirements.txt"):
-        print("❌ Не найден requirements.txt")
-        print("   Запусти из корня проекта: python setup/setup.py")
-        input("\nНажми Enter...")
+        print("[ERROR] requirements.txt not found")
+        print("  Run from project root: python setup/setup.py")
+        input("\nPress Enter...")
         sys.exit(1)
 
-    # определяем пути
+    # paths
     venv_dir = os.path.join(project_root, "venv")
-    
-    if system == "Windows":
-        pip = os.path.join(venv_dir, "Scripts", "pip.exe")
-    else:
-        pip = os.path.join(venv_dir, "bin", "pip")
 
-    # создаём venv
+    if system == "Windows":
+        python = os.path.join(venv_dir, "Scripts", "python.exe")
+    else:
+        python = os.path.join(venv_dir, "bin", "python")
+
+    # create venv
     if not os.path.exists(venv_dir):
-        print("[1/3] Создаю виртуальное окружение...")
+        print("[1/3] Creating virtual environment...")
         if not run(f"{sys.executable} -m venv venv"):
-            print("❌ Не удалось создать venv")
-            input("\nНажми Enter...")
+            print("[ERROR] Failed to create venv")
+            input("\nPress Enter...")
             sys.exit(1)
     else:
-        print("[1/3] Виртуальное окружение уже есть ✓")
+        print("[1/3] Virtual environment exists OK")
 
-    # обновляем pip
-    print("[2/3] Обновляю pip...")
-    run(f"{pip} install --upgrade pip")
+    # upgrade pip (using python -m pip to avoid Windows lock)
+    print("[2/3] Upgrading pip...")
+    run(f"{python} -m pip install --upgrade pip")
 
-    # ставим зависимости
-    print("[3/3] Устанавливаю зависимости (2-5 минут)...")
-    if not run(f"{pip} install -r requirements.txt"):
-        print("❌ Ошибка установки")
-        input("\nНажми Enter...")
+    # install dependencies
+    print("[3/3] Installing dependencies (2-5 minutes)...")
+    if not run(f"{python} -m pip install -r requirements.txt"):
+        print("[ERROR] Failed to install dependencies")
+        input("\nPress Enter...")
         sys.exit(1)
 
-    # готово
+    # done
     print()
     print("=" * 50)
-    print("  ✅ Установка завершена!")
+    print("  [OK] Installation complete!")
     print("=" * 50)
     print()
-    
+
     if system == "Windows":
-        print("  Запуск: setup\\start.bat")
+        print("  To start: double-click Launch_Windows.bat")
     else:
-        print("  Запуск: bash setup/start.sh")
-    print("  Потом открой: http://localhost:8000")
+        print("  To start: bash Launch_Linux.sh")
+    print("  Then open: http://localhost:8000")
     print()
-    input("Нажми Enter...")
+    input("Press Enter...")
 
 if __name__ == "__main__":
     main()
