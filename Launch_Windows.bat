@@ -1,17 +1,16 @@
 @echo off
-chcp 65001 >nul
 
 if not exist venv (
-    echo ❌ Сначала запусти установку: setup\install_windows.bat
+    echo [ERROR] Run setup\install_windows.bat first!
     pause
     exit /b
 )
 
-call venv\Scripts\activate.bat
 echo.
-echo 🤖 Запускаю Bot Factory...
-echo    Открой: http://localhost:8000
-echo    Для остановки: Ctrl+C
+echo  Bot Factory - Starting...
+echo  Open: http://localhost:8000
+echo  Stop: Ctrl+C
 echo.
-python app.py
+
+venv\Scripts\python.exe app.py
 pause

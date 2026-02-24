@@ -1,14 +1,14 @@
 #!/bin/bash
 
 if [ ! -d "venv" ]; then
-    echo "❌ Сначала запусти установку: bash setup/install_linux.sh"
+    echo "[ERROR] Run setup/install_linux.sh first!"
     exit 1
 fi
 
-source venv/bin/activate
 echo ""
-echo "🤖 Запускаю Bot Factory..."
-echo "   Открой: http://localhost:8000"
-echo "   Для остановки: Ctrl+C"
+echo " Bot Factory - Starting..."
+echo " Open: http://localhost:8000"
+echo " Stop: Ctrl+C"
 echo ""
-python app.py
+
+venv/bin/python app.py
