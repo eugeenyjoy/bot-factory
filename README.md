@@ -11,18 +11,18 @@
 
 ## Структура проекта
 
-bot-factory/
-├── app.py ← точка входа
-├── engine.py ← движок
-├── requirements.txt ← зависимости
-├── core/ ← мозги (brain, memory, rag, config)
-├── web/ ← фронтенд (html, css, js)
-├── docs/ ← документация
-└── setup/ ← установка и деплой
-├── install_windows.bat
-├── install_linux.sh
-├── setup.py
-├── Dockerfile
+bot-factory/  
+├── app.py ← точка входа  
+├── engine.py ← движок  
+├── requirements.txt ← зависимости  
+├── core/ ← мозги (brain, memory, rag, config)  
+├── web/ ← фронтенд (html, css, js)  
+├── docs/ ← документация  
+└── setup/ ← установка и деплой  
+├── install_windows.bat  
+├── install_linux.sh  
+├── setup.py  
+├── Dockerfile  
 └── docker-compose.yml
 
 ## Установка
@@ -36,32 +36,34 @@ bot-factory/
 
 ### Linux
 
-git clone https://github.com/eugeenyjoy/bot-factory.git
-cd bot-factory
-bash setup/install_linux.sh
+git clone https://github.com/eugeenyjoy/bot-factory.git  
+cd bot-factory  
+bash setup/install_linux.sh  
 Открой http://localhost:8000
 
 Docker:
 
-cd setup
+cd setup  
 docker compose up --build
 
 ## Запуск (после установки)
 
 ### Windows
 
-venv\Scripts\activate.bat
+venv\Scripts\activate.bat  
 python app.py
 
 ### Linux
 
-source venv/bin/activate
-python app.py
-Стек
-Python 3 + FastAPI
-OpenRouter API (OpenAI-совместимый)
-sentence-transformers (эмбеддинги)
-FAISS (векторный поиск)
+source venv/bin/activate  
+python app.py  
+Стек  
+Python 3 + FastAPI  
+OpenRouter API (OpenAI-совместимый)  
+sentence-transformers (эмбеддинги)  
+FAISS (векторный поиск)  
 PyTorch CPU-only (~200 МБ вместо 7 ГБ)
-Лицензия
+
+### Лицензия
+
 MIT
