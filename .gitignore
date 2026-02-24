@@ -8,7 +8,7 @@ __pycache__/
 bots/
 
 # Модели эмбеддингов (скачаются автоматически)
-.cache/
+.models/
 
 # IDE
 .vscode/
