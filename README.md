@@ -50,19 +50,31 @@ docker compose up --build
 
 ### Windows
 
-venv\Scripts\activate.bat  
-python app.py
+- Двойной клик → Launch_Windows.bat
+
+или:
+
+- venv\Scripts\activate.bat
+- python app.py
 
 ### Linux
 
-source venv/bin/activate  
-python app.py  
-Стек  
-Python 3 + FastAPI  
-OpenRouter API (OpenAI-совместимый)  
-sentence-transformers (эмбеддинги)  
-FAISS (векторный поиск)  
-PyTorch CPU-only (~200 МБ вместо 7 ГБ)
+- Двойной клик → Launch_Linux.sh
+
+или:
+
+- bash Launch_Windows.sh  
+  или:
+- source venv/bin/activate
+- python app.py
+
+### Стек
+
+- Python 3 + FastAPI
+- OpenRouter API (OpenAI-совместимый)
+- sentence-transformers (эмбеддинги)
+- FAISS (векторный поиск)
+- PyTorch CPU-only (~200 МБ вместо 7 ГБ)
 
 ### Лицензия
 
