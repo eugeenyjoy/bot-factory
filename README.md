@@ -1,68 +1,68 @@
 # 🤖 Bot Factory
 
-Платформа для создания AI-ботов с базой знаний (RAG).
+Конструктор AI-ботов с базой знаний. Загрузи документы — получи умного бота.
 
 ## Возможности
 
-- 🏗️ Создание нескольких ботов из одной панели
-- 🧠 Каждый бот — своя личность, модель, память
-- 📚 База знаний (RAG) — загружай документы, бот отвечает по ним
-- 💬 Веб-чат с историей
-- 💰 Система лимитов и монетизации
-- ☑️ Управление историей (выбор и удаление как в Telegram)
+- 💬 Чат с AI (OpenRouter API)
+- 📄 Загрузка PDF / текстовых файлов как базы знаний
+- 🧠 RAG — бот отвечает на основе твоих документов
+- 🔧 Создание нескольких ботов с разными настройками
 
-## Быстрый старт
-
-### 1. Клонируй
-
-```bash
-git clone https://github.com/ТВОЙ_ЮЗЕРНЕЙМ/bot-factory.git
-cd bot-factory
-2. Создай виртуальное окружение
-Bash
-
-python3 -m venv venv
-source venv/bin/activate
-3. Установи зависимости
-Bash
-
-pip install -r requirements.txt
-4. Запусти
-Bash
-
-python app.py
-5. Открой
-
-http://localhost:8000
-Как пользоваться
-Нажми “+ Создать бота”
-Укажи имя, API ключ (OpenRouter), модель, промпт
-Нажми “▶ Запустить”
-Нажми “💬 Чат” — общайся
-Нажми “📚 Знания” — загрузи документы
-API ключ
-Получи бесплатный ключ на OpenRouter
-
-Структура
+## Структура проекта
 
 bot-factory/
-├── app.py              # FastAPI сервер + API
-├── engine.py           # Движок управления ботами
-├── core/
-│   ├── brain.py        # Мозг бота (AI + RAG)
-│   ├── memory.py       # Память (SQLite)
-│   ├── config.py       # Конфигурация
-│   └── rag.py          # База знаний (FAISS)
-├── web/
-│   ├── index.html      # Панель управления
-│   ├── chat.html       # Веб-чат
-│   ├── style.css       # Стили
-│   ├── app.js          # Логика панели
-│   └── chat.js         # Логика чата
-├── bots/               # Данные ботов (создаются автоматически)
-├── requirements.txt
-└── README.md
+├── app.py ← точка входа
+├── engine.py ← движок
+├── requirements.txt ← зависимости
+├── core/ ← мозги (brain, memory, rag, config)
+├── web/ ← фронтенд (html, css, js)
+├── docs/ ← документация
+└── setup/ ← установка и деплой
+├── install_windows.bat
+├── install_linux.sh
+├── setup.py
+├── Dockerfile
+└── docker-compose.yml
+
+## Установка
+
+### Windows
+
+1. Установи [Python 3.10+](https://www.python.org/downloads/) (галочка **Add to PATH**)
+2. Скачай и распакуй проект
+3. Двойной клик → `setup/install_windows.bat`
+4. Открой http://localhost:8000
+
+### Linux
+
+```bash
+git clone https://github.com/YOUR_USERNAME/bot-factory.git
+cd bot-factory
+bash setup/install_linux.sh
+Открой http://localhost:8000
+
+Docker
+Bash
+
+cd setup
+docker compose up --build
+Запуск (после установки)
+Windows
+
+venv\Scripts\activate.bat
+python app.py
+Linux
+Bash
+
+source venv/bin/activate
+python app.py
+Стек
+Python 3 + FastAPI
+OpenRouter API (OpenAI-совместимый)
+sentence-transformers (эмбеддинги)
+FAISS (векторный поиск)
+PyTorch CPU-only (~200 МБ вместо 7 ГБ)
 Лицензия
 MIT
-MDEOF
 ```
