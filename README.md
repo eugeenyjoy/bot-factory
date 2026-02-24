@@ -36,24 +36,24 @@ bot-factory/
 
 ### Linux
 
-```bash
-git clone https://github.com/YOUR_USERNAME/bot-factory.git
+git clone https://github.com/eugeenyjoy/bot-factory.git
 cd bot-factory
 bash setup/install_linux.sh
 Открой http://localhost:8000
 
-Docker
-Bash
+Docker:
 
 cd setup
 docker compose up --build
-Запуск (после установки)
-Windows
+
+## Запуск (после установки)
+
+### Windows
 
 venv\Scripts\activate.bat
 python app.py
-Linux
-Bash
+
+### Linux
 
 source venv/bin/activate
 python app.py
@@ -65,4 +65,3 @@ FAISS (векторный поиск)
 PyTorch CPU-only (~200 МБ вместо 7 ГБ)
 Лицензия
 MIT
-```
