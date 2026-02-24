@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Чат</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="chat-container">
+
+    <!-- шапка -->
+    <div class="chat-header">
+        <div style="width:80px;"></div>
+        <div class="chat-header-info">
+            <h2 id="chatBotName">🤖 Загрузка...</h2>
+            <p id="chatBotModel"></p>
+        </div>
+        <div class="chat-header-actions">
+            <button onclick="enterSelectMode()" title="Выбрать сообщения" id="btnSelect">☑️</button>
+            <button onclick="showClearConfirm()" title="Очистить всё">🗑️</button>
+            <button onclick="toggleMemoryView()" title="Память бота" id="btnMemory">🧠</button>
+        </div>
+    </div>
+
+    <!-- панель выбора сообщений -->
+    <div class="select-bar" id="selectBar">
+        <span id="selectedCount">Выбрано: 0</span>
+        <div class="select-bar-actions">
+            <button class="btn btn-ghost btn-sm" onclick="selectAll()">Выбрать все</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteSelected()">🗑️ Удалить</button>
+            <button class="btn btn-ghost btn-sm" onclick="exitSelectMode()">✕ Отмена</button>
+        </div>
+    </div>
+
+    <!-- подтверждение очистки -->
+    <div class="confirm-bar" id="confirmBar">
+        <span>Очистить всю историю?</span>
+        <button class="btn btn-danger btn-sm" onclick="clearAllHistory()">Да, очистить</button>
+        <button class="btn btn-ghost btn-sm" onclick="hideClearConfirm()">Отмена</button>
+    </div>
+
+    <!-- счётчик -->
+    <div class="memory-counter" id="memoryCounter"></div>
+
+    <!-- сообщения -->
+    <div class="chat-messages" id="chatMessages">
+        <div class="chat-welcome">Привет! Напиши мне что-нибудь 👋</div>
+    </div>
+
+    <!-- ввод -->
+    <div class="chat-input-area">
+        <input type="text" id="chatInput" placeholder="Напиши сообщение..."
+               autocomplete="off" onkeydown="if(event.key==='Enter') sendMessage()">
+        <button onclick="sendMessage()">➤</button>
+    </div>
+
+</div>
+
+<!-- логика чата — отдельный файл -->
+<script src="/static/chat.js"></script>
+
+</body>
+</html>
