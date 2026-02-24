@@ -36,15 +36,15 @@ bot-factory/
 
 ### Linux
 
-git clone https://github.com/eugeenyjoy/bot-factory.git  
-cd bot-factory  
-bash setup/install_linux.sh  
-Открой http://localhost:8000
+1. git clone https://github.com/eugeenyjoy/bot-factory.git
+2. cd bot-factory
+3. bash setup/install_linux.sh
+4. Открой http://localhost:8000
 
 Docker:
 
-cd setup  
-docker compose up --build
+- cd setup
+- docker compose up --build
 
 ## Запуск (после установки)
 
