@@ -185,6 +185,16 @@ def api_web_chat(bot_id: str, req: ChatRequest):
         user_id=req.user_id,
         message=req.message
     )
+
+    # если лимит — добавляем понятное сообщение
+    if not result["ok"] and result.get("error") == "limit":
+        remaining = result.get("remaining", 0)
+        result["reply"] = (
+            f"📭 Лимит сообщений исчерпан!\n\n"
+            f"Использовано все доступные сообщения.\n"
+            f"Подключите Telegram чтобы купить ещё (/buy)."
+        )
+
     return result
 
 

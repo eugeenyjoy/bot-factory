@@ -82,6 +82,18 @@ class Brain:
 
             reply = response.choices[0].message.content
 
+            # Grok и некоторые модели возвращают пустой content
+            # но тратят токены на reasoning — ловим это
+            if not reply or reply.strip() == "":
+                # пробуем достать reasoning/refusal
+                choice = response.choices[0]
+                # некоторые модели кладут ответ в refusal
+                if hasattr(choice.message, 'refusal') and choice.message.refusal:
+                    reply = choice.message.refusal
+                else:
+                    logger.warning(f"Empty reply from {self.model} for bot {self.bot_id}")
+                    reply = "🤔 Модель вернула пустой ответ. Попробуйте переформулировать или сменить модель."
+
             # сохраняем в память
             self.memory.save_message(chat_id, user_id, "user", message)
             self.memory.save_message(chat_id, user_id, "assistant", reply)

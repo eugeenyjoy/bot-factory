@@ -196,15 +196,22 @@ async function sendMessage() {
         removeTyping();
 
         if (res.ok && data.ok) {
-            // перезагружаем историю — получаем правильные msg_id
-            await loadHistory();
+            // добавляем ответ бота прямо в чат (без перезагрузки)
+            const botRow = buildMsgRow(null, 'assistant', data.reply, null);
+            container.appendChild(botRow);
+            container.scrollTop = container.scrollHeight;
+
+            // тихо обновляем массив messages в фоне (для памяти/выбора)
+            loadHistory();
 
             // предупреждение о лимите
             if (data.remaining !== undefined && data.remaining < 5 && data.remaining > 0) {
                 appendSystem(`Осталось сообщений: ${data.remaining}`);
             }
         } else if (data.error === 'limit') {
-            appendSystem('😔 Сообщения закончились!');
+            // убираем сообщение юзера — оно не сохранилось
+            userRow.remove();
+            appendSystem('📭 Лимит сообщений исчерпан! Купите ещё через /buy');
         } else {
             appendSystem('⚠️ Ошибка. Попробуй ещё раз.');
         }

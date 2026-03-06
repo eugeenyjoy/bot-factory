@@ -101,14 +101,15 @@ class Memory:
         conn.close()
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
-    def get_history_with_index(self, chat_id: int, limit: int = 100) -> list:
+    def get_history_with_index(self, chat_id: int, limit: int = 500) -> list:
         """Возвращает историю с ID сообщений (для удаления)"""
         conn = self._connect()
         rows = conn.execute(
-            "SELECT id, role, content, timestamp FROM messages WHERE chat_id = ? ORDER BY id ASC LIMIT ?",
+            "SELECT id, role, content, timestamp FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
             (chat_id, limit)
         ).fetchall()
         conn.close()
+        # разворачиваем обратно — от старых к новым
         return [
             {
                 "msg_id": r["id"],
@@ -116,7 +117,7 @@ class Memory:
                 "content": r["content"],
                 "timestamp": r["timestamp"]
             }
-            for r in rows
+            for r in reversed(rows)
         ]
 
     def delete_message_by_id(self, msg_id: int) -> bool:

@@ -142,10 +142,12 @@ class TelegramRunner:
             elif result["error"] == "limit":
                 price = self.config["stars_price"]
                 msgs = self.config["messages_per_purchase"]
+                remaining = result.get("remaining", 0)
                 await message.answer(
-                    f"😔 Сообщения закончились!\n\n"
-                    f"Купи пакет: {msgs} сообщений за {price} ⭐\n"
-                    f"/buy — купить"
+                    f"📭 Лимит сообщений исчерпан!\n\n"
+                    f"Осталось: {remaining}\n\n"
+                    f"💎 Купить {msgs} сообщений за {price} ⭐:\n"
+                    f"/buy — оплатить через Telegram Stars"
                 )
             else:
                 logger.error(f"Bot {self.bot_id} error: {result['error']}")
