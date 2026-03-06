@@ -20,7 +20,7 @@ from pathlib import Path
 from engine import Engine
 from core.config import (
     list_bots, load_config, create_bot, delete_bot,
-    update_bot, get_models, BOTS_DIR
+    update_bot, get_models, get_providers, BOTS_DIR
 )
 
 # логирование
@@ -31,7 +31,7 @@ logger = logging.getLogger("app")
 ROOT_DIR = Path(__file__).parent
 
 # FastAPI приложение
-app = FastAPI(title="Bot Factory", version="1.0")
+app = FastAPI(title="Bot Factory", version="2.0")
 
 # движок ботов
 engine = Engine()
@@ -47,6 +47,8 @@ class CreateBotRequest(BaseModel):
     api_key: str
     model: Optional[str] = "mistralai/mistral-nemo"
     system_prompt: Optional[str] = "Ты — полезный AI ассистент."
+    provider: Optional[str] = "openrouter"
+    custom_base_url: Optional[str] = ""
 
 
 class UpdateBotRequest(BaseModel):
@@ -61,6 +63,9 @@ class UpdateBotRequest(BaseModel):
     messages_per_purchase: Optional[int] = None
     enable_telegram: Optional[bool] = None
     enable_groups: Optional[bool] = None
+    enable_web_chat: Optional[bool] = None
+    provider: Optional[str] = None
+    custom_base_url: Optional[str] = None
 
 
 class VipRequest(BaseModel):
@@ -89,7 +94,9 @@ def api_create_bot(req: CreateBotRequest):
         bot_token=req.bot_token,
         api_key=req.api_key,
         model=req.model,
-        system_prompt=req.system_prompt
+        system_prompt=req.system_prompt,
+        provider=req.provider,
+        custom_base_url=req.custom_base_url
     )
     return {"ok": True, "bot": config}
 
@@ -126,7 +133,6 @@ def api_delete_bot(bot_id: str):
 
 @app.post("/api/bots/{bot_id}/start")
 def api_start_bot(bot_id: str):
-    """Активировать бота (веб-чат работает сразу)"""
     success = engine.activate_bot(bot_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to activate bot")
@@ -135,14 +141,12 @@ def api_start_bot(bot_id: str):
 
 @app.post("/api/bots/{bot_id}/stop")
 def api_stop_bot(bot_id: str):
-    """Деактивировать бота"""
     engine.deactivate_bot(bot_id)
     return {"ok": True}
 
 
 @app.post("/api/bots/{bot_id}/restart")
 def api_restart_bot(bot_id: str):
-    """Перезапустить бота"""
     engine.deactivate_bot(bot_id)
     time.sleep(1)
     engine.activate_bot(bot_id)
@@ -155,7 +159,6 @@ def api_restart_bot(bot_id: str):
 
 @app.post("/api/bots/{bot_id}/telegram/start")
 def api_start_telegram(bot_id: str):
-    """Подключить Telegram"""
     success = engine.start_telegram(bot_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed. Check bot token.")
@@ -164,18 +167,16 @@ def api_start_telegram(bot_id: str):
 
 @app.post("/api/bots/{bot_id}/telegram/stop")
 def api_stop_telegram(bot_id: str):
-    """Отключить Telegram"""
     engine.stop_telegram(bot_id)
     return {"ok": True}
 
 
 # ====================================================
-# API — ВЕБ ЧАТ (работает всегда если бот активен)
+# API — ВЕБ ЧАТ
 # ====================================================
 
 @app.post("/api/bots/{bot_id}/chat")
 def api_web_chat(bot_id: str, req: ChatRequest):
-    """Чат с ботом через веб"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active. Click Start first.")
@@ -186,9 +187,7 @@ def api_web_chat(bot_id: str, req: ChatRequest):
         message=req.message
     )
 
-    # если лимит — добавляем понятное сообщение
     if not result["ok"] and result.get("error") == "limit":
-        remaining = result.get("remaining", 0)
         result["reply"] = (
             f"📭 Лимит сообщений исчерпан!\n\n"
             f"Использовано все доступные сообщения.\n"
@@ -258,13 +257,13 @@ def api_reset_bot(bot_id: str):
     brain.clear_all()
     return {"ok": True}
 
+
 # ====================================================
 # API — ИСТОРИЯ ЧАТА (просмотр и удаление)
 # ====================================================
 
 @app.get("/api/bots/{bot_id}/history/{chat_id}")
 def api_get_history(bot_id: str, chat_id: int):
-    """Получить историю чата с ID сообщений"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
@@ -273,7 +272,6 @@ def api_get_history(bot_id: str, chat_id: int):
 
 @app.delete("/api/bots/{bot_id}/messages/{msg_id}")
 def api_delete_one_message(bot_id: str, msg_id: int):
-    """Удалить одно сообщение по ID"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
@@ -289,12 +287,12 @@ class DeleteMessagesRequest(BaseModel):
 
 @app.post("/api/bots/{bot_id}/messages/delete")
 def api_delete_messages(bot_id: str, req: DeleteMessagesRequest):
-    """Удалить несколько сообщений по списку ID"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
     deleted = brain.memory.delete_messages_by_ids(req.msg_ids)
     return {"ok": True, "deleted": deleted}
+
 
 # ====================================================
 # API — СТАТИСТИКА
@@ -315,13 +313,13 @@ def api_get_payments(bot_id: str):
         raise HTTPException(status_code=400, detail="Bot not running")
     return brain.memory.get_payments()
 
+
 # ====================================================
 # API — БАЗА ЗНАНИЙ (RAG)
 # ====================================================
 
 @app.get("/api/bots/{bot_id}/knowledge")
 def api_get_knowledge(bot_id: str):
-    """Информация о базе знаний"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
@@ -335,7 +333,6 @@ class UploadFileRequest(BaseModel):
 
 @app.post("/api/bots/{bot_id}/knowledge/file")
 def api_upload_file(bot_id: str, req: UploadFileRequest):
-    """Загрузить файл в базу знаний (base64)"""
     import base64
     brain = engine.get_brain(bot_id)
     if not brain:
@@ -354,7 +351,6 @@ class AddTextRequest(BaseModel):
 
 @app.post("/api/bots/{bot_id}/knowledge/text")
 def api_add_text(bot_id: str, req: AddTextRequest):
-    """Добавить текст в базу знаний"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
@@ -363,7 +359,6 @@ def api_add_text(bot_id: str, req: AddTextRequest):
 
 @app.delete("/api/bots/{bot_id}/knowledge/{filename}")
 def api_delete_knowledge_file(bot_id: str, filename: str):
-    """Удалить файл из базы знаний"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
@@ -373,7 +368,6 @@ def api_delete_knowledge_file(bot_id: str, filename: str):
 
 @app.delete("/api/bots/{bot_id}/knowledge")
 def api_clear_knowledge(bot_id: str):
-    """Очистить всю базу знаний"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
@@ -388,7 +382,6 @@ class SearchRequest(BaseModel):
 
 @app.post("/api/bots/{bot_id}/knowledge/search")
 def api_search_knowledge(bot_id: str, req: SearchRequest):
-    """Поиск по базе знаний"""
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
@@ -397,12 +390,17 @@ def api_search_knowledge(bot_id: str, req: SearchRequest):
 
 
 # ====================================================
-# API — МОДЕЛИ
+# API — МОДЕЛИ И ПРОВАЙДЕРЫ
 # ====================================================
 
 @app.get("/api/models")
 def api_get_models():
     return get_models()
+
+
+@app.get("/api/providers")
+def api_get_providers():
+    return get_providers()
 
 
 # ====================================================
@@ -441,7 +439,7 @@ def open_browser():
 
 @app.on_event("startup")
 async def on_startup():
-    logger.info("🚀 Bot Factory starting...")
+    logger.info("🚀 Bot Factory v2.0 starting...")
     engine.start_all()
     logger.info("✅ Bot Factory ready")
 
@@ -455,7 +453,7 @@ async def on_shutdown():
 if __name__ == "__main__":
     print()
     print("=" * 50)
-    print("  🤖 Bot Factory v1.0")
+    print("  🤖 Bot Factory v2.0")
     print("  📍 http://localhost:8000")
     print("  ⛔ Ctrl+C чтобы остановить")
     print("=" * 50)

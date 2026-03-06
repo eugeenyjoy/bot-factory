@@ -1,12 +1,13 @@
 """
 Мозг бота — обрабатывает сообщения через AI
-Теперь с поддержкой RAG (база знаний)
+Поддержка разных провайдеров (OpenRouter, OpenAI, Anthropic, xAI, DeepSeek...)
 """
 
 import logging
 from openai import OpenAI
 from core.memory import Memory
 from core.rag import RAG
+from core.config import AI_PROVIDERS
 
 logger = logging.getLogger("brain")
 
@@ -15,7 +16,8 @@ class Brain:
 
     def __init__(self, bot_id: str, api_key: str, model: str,
                 system_prompt: str, max_history: int = 20,
-                free_messages: int = 20, rag_top_k: int = 3):
+                free_messages: int = 20, rag_top_k: int = 3,
+                provider: str = "openrouter", custom_base_url: str = ""):
 
         self.bot_id = bot_id
         self.model = model
@@ -23,10 +25,19 @@ class Brain:
         self.max_history = max_history
         self.free_messages = free_messages
         self.rag_top_k = rag_top_k
+        self.provider = provider
 
-        # OpenRouter клиент
+        # определяем base_url по провайдеру
+        if provider == "custom" and custom_base_url:
+            base_url = custom_base_url
+        elif provider in AI_PROVIDERS:
+            base_url = AI_PROVIDERS[provider]["base_url"]
+        else:
+            base_url = AI_PROVIDERS["openrouter"]["base_url"]
+
+        # OpenAI-совместимый клиент (работает для всех провайдеров)
         self.ai_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
+            base_url=base_url,
             api_key=api_key
         )
 
@@ -38,7 +49,6 @@ class Brain:
 
     @property
     def rag(self) -> RAG:
-        """RAG загружается только когда нужен"""
         if self._rag is None:
             self._rag = RAG(self.bot_id)
         return self._rag
@@ -82,12 +92,9 @@ class Brain:
 
             reply = response.choices[0].message.content
 
-            # Grok и некоторые модели возвращают пустой content
-            # но тратят токены на reasoning — ловим это
+            # ловим пустые ответы (Grok, некоторые модели)
             if not reply or reply.strip() == "":
-                # пробуем достать reasoning/refusal
                 choice = response.choices[0]
-                # некоторые модели кладут ответ в refusal
                 if hasattr(choice.message, 'refusal') and choice.message.refusal:
                     reply = choice.message.refusal
                 else:
@@ -116,19 +123,15 @@ class Brain:
     def _build_system_prompt(self, user_name: str = None,
                               facts: list = None,
                               knowledge_context: str = "") -> str:
-        """Собирает системный промпт"""
         parts = [self.system_prompt]
 
-        # факты о юзере
         if facts:
             facts_text = "\n".join(f"- {f}" for f in facts)
             parts.append(f"\nИзвестные факты о пользователе:\n{facts_text}")
 
-        # имя юзера
         if user_name:
             parts.append(f"\nИмя пользователя: {user_name}")
 
-        # база знаний
         if knowledge_context:
             parts.append(
                 f"\n\n📚 БАЗА ЗНАНИЙ — используй эту информацию для ответа:\n\n"
@@ -164,7 +167,6 @@ class Brain:
 
     def get_stats(self) -> dict:
         stats = self.memory.get_stats()
-        # добавляем инфо о базе знаний
         if self._rag:
             stats["knowledge"] = self._rag.get_info()
         return stats

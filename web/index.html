@@ -8,298 +8,265 @@
 </head>
 <body>
 
-<!-- ============================
-     ШАПКА
-     ============================ -->
-<div class="header">
-    <h1>🤖 <span>Bot Factory</span></h1>
-    <div class="header-actions">
-        <button class="btn btn-primary" onclick="openCreateModal()">+ Новый бот</button>
+<!-- Шапка -->
+<header class="header">
+    <div class="header-left">
+        <h1>🤖 Bot Factory</h1>
+        <span class="version">v2.0</span>
     </div>
-</div>
+    <button class="btn btn-primary" onclick="openCreateModal()">＋ Новый бот</button>
+</header>
 
-<!-- ============================
-     ОСНОВНОЙ КОНТЕНТ
-     ============================ -->
+<!-- Сетка ботов -->
 <div class="container">
-    <!-- сетка ботов — заполняется из JS -->
     <div class="bots-grid" id="botsGrid"></div>
-
-    <!-- пустое состояние если ботов нет -->
     <div class="empty-state" id="emptyState" style="display:none;">
-        <div class="icon">🤖</div>
-        <p>Ботов пока нет. Создай первого!</p>
-        <button class="btn btn-primary" onclick="openCreateModal()">+ Создать бота</button>
+        <p>🤖 Пока нет ботов</p>
+        <p>Нажмите «＋ Новый бот» чтобы начать</p>
     </div>
 </div>
 
-<!-- ============================
-     МОДАЛКА — СОЗДАНИЕ БОТА
-     ============================ -->
+<!-- ====================================================
+     МОДАЛКА: СОЗДАНИЕ БОТА
+     ==================================================== -->
 <div class="modal-overlay" id="createModal">
     <div class="modal">
         <div class="modal-header">
-            <h2>Новый бот</h2>
-            <button class="modal-close" onclick="closeModal('createModal')">&times;</button>
+            <h2>＋ Новый бот</h2>
+            <button class="modal-close" onclick="closeModal('createModal')">✕</button>
         </div>
-
-        <div class="form-group">
-            <label>Имя бота</label>
-            <input type="text" id="newName" placeholder="Бро, Ассистент, Подружка...">
+        <div class="modal-body">
+            <div class="form-group">
+                <label>📛 Имя бота</label>
+                <input type="text" id="newName" placeholder="Мой бот">
+            </div>
+            <div class="form-group">
+                <label>🔌 Провайдер AI</label>
+                <select id="newProvider" onchange="onProviderChange('new')">
+                    <option value="openrouter">OpenRouter — все модели через один ключ</option>
+                    <option value="openai">OpenAI — прямой (GPT-4)</option>
+                    <option value="anthropic">Anthropic — прямой (Claude)</option>
+                    <option value="deepseek">DeepSeek — прямой</option>
+                    <option value="xai">xAI — прямой (Grok)</option>
+                    <option value="google">Google AI Studio (Gemini) ⚠️VPN</option>
+                    <option value="custom">Свой API (OpenAI-совместимый)</option>
+                </select>
+            </div>
+            <div class="form-group" id="newCustomUrlGroup" style="display:none;">
+                <label>🔗 Base URL</label>
+                <input type="text" id="newCustomUrl" placeholder="https://your-api.com/v1">
+            </div>
+            <div class="form-group">
+                <label>🔑 API ключ</label>
+                <input type="password" id="newApiKey" placeholder="sk-or-...">
+            </div>
+            <div class="form-group">
+                <label>🤖 Модель</label>
+                <select id="newModel"></select>
+                <input type="text" id="newModelManual" placeholder="или впишите ID модели вручную" style="margin-top:6px;">
+                <div class="form-hint">Выберите из списка или введите ID вручную</div>
+            </div>
+            <div class="form-group">
+                <label>🔐 Telegram токен <span style="color:#555;">(не обязательно)</span></label>
+                <input type="text" id="newToken" placeholder="123456:ABC-DEF...">
+            </div>
+            <div class="form-group">
+                <label>📝 Системный промпт</label>
+                <textarea id="newPrompt" rows="3">Ты — полезный AI ассистент.</textarea>
+            </div>
         </div>
-
-        <div class="form-group">
-            <label>Токен от @BotFather (необязательно — для Telegram)</label>
-            <input type="text" id="newToken" placeholder="Можно добавить потом">
-        </div>
-
-        <div class="form-group">
-            <label>OpenRouter API ключ</label>
-            <input type="text" id="newApiKey" placeholder="sk-or-v1-...">
-        </div>
-
-        <div class="form-group">
-            <label>Модель</label>
-            <select id="newModel"></select>
-        </div>
-
-        <div class="form-group">
-            <label>Личность (системный промпт)</label>
-            <textarea id="newPrompt" placeholder="Опиши характер бота...">Ты — полезный AI ассистент.</textarea>
-        </div>
-
-        <div class="form-actions">
+        <div class="modal-footer">
             <button class="btn btn-ghost" onclick="closeModal('createModal')">Отмена</button>
-            <button class="btn btn-primary" onclick="createBot()">Создать</button>
+            <button class="btn btn-primary" onclick="createBot()">Создать ✨</button>
         </div>
     </div>
 </div>
 
-<!-- ============================
-     МОДАЛКА — РЕДАКТИРОВАНИЕ БОТА
-     ============================ -->
+<!-- ====================================================
+     МОДАЛКА: РЕДАКТИРОВАНИЕ БОТА
+     ==================================================== -->
 <div class="modal-overlay" id="editModal">
-    <div class="modal" style="max-width:700px;">
+    <div class="modal modal-wide">
         <div class="modal-header">
-            <h2 id="editTitle">Редактирование</h2>
-            <button class="modal-close" onclick="closeModal('editModal')">&times;</button>
+            <h2 id="editTitle">✏️ Настройки бота</h2>
+            <button class="modal-close" onclick="closeModal('editModal')">✕</button>
         </div>
 
         <!-- табы -->
-        <div class="tabs">
-            <button class="tab active" onclick="switchTab('settings')">⚙️ Настройки</button>
-            <button class="tab" onclick="switchTab('monetization')">💰 Монетизация</button>
-            <button class="tab" onclick="switchTab('users')">👥 Юзеры</button>
-            <button class="tab" onclick="switchTab('stats')">📊 Статистика</button>
-            <button class="tab" onclick="switchTab('danger')">⚠️ Опасное</button>
+        <div class="tabs" id="editTabs">
+            <button class="tab active" data-tab="settings" onclick="switchTab('settings')">⚙️ Настройки</button>
+            <button class="tab" data-tab="monetization" onclick="switchTab('monetization')">💰 Монетизация</button>
+            <button class="tab" data-tab="users" onclick="switchTab('users')">👥 Юзеры</button>
+            <button class="tab" data-tab="stats" onclick="switchTab('stats')">📊 Стата</button>
+            <button class="tab" data-tab="payments" onclick="switchTab('payments')">💳 Платежи</button>
+            <button class="tab" data-tab="danger" onclick="switchTab('danger')">⚠️ Опасное</button>
         </div>
 
-        <!-- ТАБ: Настройки -->
+        <!-- ТАБ: НАСТРОЙКИ -->
         <div class="tab-content active" id="tab-settings">
             <div class="form-group">
-                <label>Имя бота</label>
+                <label>📛 Имя бота</label>
                 <input type="text" id="editName">
             </div>
-
             <div class="form-group">
-                <label>Токен от @BotFather</label>
+                <label>🔌 Провайдер AI</label>
+                <select id="editProvider" onchange="onProviderChange('edit')">
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="xai">xAI (Grok)</option>
+                    <option value="google">Google AI Studio ⚠️VPN</option>
+                    <option value="custom">Свой API</option>
+                </select>
+            </div>
+            <div class="form-group" id="editCustomUrlGroup" style="display:none;">
+                <label>🔗 Base URL</label>
+                <input type="text" id="editCustomUrl" placeholder="https://your-api.com/v1">
+            </div>
+            <div class="form-group">
+                <label>🔑 API ключ</label>
+                <input type="password" id="editApiKey">
+            </div>
+            <div class="form-group">
+                <label>🤖 Модель</label>
+                <select id="editModel"></select>
+                <input type="text" id="editModelManual" placeholder="или впишите ID модели вручную" style="margin-top:6px;">
+            </div>
+            <div class="form-group">
+                <label>🔐 Telegram токен</label>
                 <input type="text" id="editToken">
             </div>
-
             <div class="form-group">
-                <label>OpenRouter API ключ</label>
-                <input type="text" id="editApiKey">
+                <label>📝 Системный промпт</label>
+                <textarea id="editPrompt" rows="4"></textarea>
             </div>
-
             <div class="form-group">
-                <label>Модель</label>
-                <select id="editModel"></select>
+                <label>🧠 Длина памяти (сообщений)</label>
+                <input type="number" id="editMaxHistory" min="1" max="100" value="20">
             </div>
-
-            <div class="form-group">
-                <label>Личность (системный промпт)</label>
-                <textarea id="editPrompt" rows="5"></textarea>
-            </div>
-
             <div class="form-row">
-                <div class="form-group">
-                    <label>Глубина памяти (сообщений)</label>
-                    <input type="number" id="editMaxHistory" min="1" max="100">
-                </div>
-                <div class="form-group">
-                    <label>Работа в группах</label>
-                    <div style="padding-top:8px;">
-                        <label class="toggle">
-                            <input type="checkbox" id="editGroups">
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                </div>
+                <label class="toggle-label">
+                    <input type="checkbox" id="editGroups">
+                    <span class="toggle-slider"></span>
+                    Работа в группах
+                </label>
+                <label class="toggle-label">
+                    <input type="checkbox" id="editWebChat">
+                    <span class="toggle-slider"></span>
+                    Веб-чат
+                </label>
             </div>
-
             <div class="form-group">
-                <label>Веб-чат</label>
-                <div style="display:flex; align-items:center; gap:12px;">
-                    <label class="toggle">
-                        <input type="checkbox" id="editWebChat">
-                        <span class="toggle-slider"></span>
-                    </label>
-                    <a href="#" id="webChatLink" target="_blank" style="color:#646cff; font-size:13px;">Открыть веб-чат</a>
-                </div>
-            </div>
-
-            <div class="form-actions">
-                <button class="btn btn-ghost" onclick="closeModal('editModal')">Отмена</button>
-                <button class="btn btn-primary" onclick="saveBot()">💾 Сохранить</button>
+                <label>🔗 Веб-чат</label>
+                <a id="webChatLink" href="#" target="_blank" class="web-chat-link">Открыть чат →</a>
             </div>
         </div>
 
-        <!-- ТАБ: Монетизация -->
+        <!-- ТАБ: МОНЕТИЗАЦИЯ -->
         <div class="tab-content" id="tab-monetization">
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Бесплатных сообщений</label>
-                    <input type="number" id="editFreeMessages" min="0">
-                </div>
-                <div class="form-group">
-                    <label>Сообщений в пакете</label>
-                    <input type="number" id="editMsgPerPurchase" min="1">
-                </div>
-            </div>
-
             <div class="form-group">
-                <label>Цена пакета (Telegram Stars ⭐)</label>
-                <input type="number" id="editStarsPrice" min="1">
+                <label>🎁 Бесплатных сообщений</label>
+                <input type="number" id="editFreeMessages" min="0" value="20">
+                <div class="form-hint">Сколько сообщений юзер получает бесплатно</div>
             </div>
-
-            <h3 style="color:#fff; margin:20px 0 12px; font-size:15px;">История платежей</h3>
-            <div id="paymentsTable">
-                <p style="color:#8b8b8b; font-size:13px;">Запустите бота чтобы увидеть платежи</p>
+            <div class="form-group">
+                <label>💬 Сообщений за покупку</label>
+                <input type="number" id="editMsgPerPurchase" min="1" value="50">
             </div>
-
-            <div class="form-actions">
-                <button class="btn btn-primary" onclick="saveBot()">💾 Сохранить</button>
+            <div class="form-group">
+                <label>⭐ Цена в Stars</label>
+                <input type="number" id="editStarsPrice" min="1" value="50">
             </div>
         </div>
 
-        <!-- ТАБ: Юзеры -->
+        <!-- ТАБ: ЮЗЕРЫ -->
         <div class="tab-content" id="tab-users">
             <div id="usersContent">
-                <p style="color:#8b8b8b; font-size:13px;">Запустите бота чтобы увидеть юзеров</p>
+                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть юзеров</p>
             </div>
         </div>
 
-        <!-- ТАБ: Статистика -->
+        <!-- ТАБ: СТАТИСТИКА -->
         <div class="tab-content" id="tab-stats">
             <div class="stats-grid" id="statsGrid">
-                <p style="color:#8b8b8b; font-size:13px;">Запустите бота чтобы увидеть статистику</p>
+                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть статистику</p>
             </div>
         </div>
 
-        <!-- ТАБ: Опасное -->
+        <!-- ТАБ: ПЛАТЕЖИ -->
+        <div class="tab-content" id="tab-payments">
+            <div id="paymentsTable">
+                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть платежи</p>
+            </div>
+        </div>
+
+        <!-- ТАБ: ОПАСНАЯ ЗОНА -->
         <div class="tab-content" id="tab-danger">
-            <p style="color:#8b8b8b; margin-bottom:20px; font-size:14px;">
-                Эти действия необратимы. Будьте осторожны.
-            </p>
-
-            <div style="display:flex; flex-direction:column; gap:12px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:#0f0f0f; border-radius:8px;">
-                    <div>
-                        <div style="color:#fff; font-size:14px;">Очистить историю</div>
-                        <div style="color:#8b8b8b; font-size:12px;">Удалит все сообщения бота</div>
-                    </div>
-                    <button class="btn btn-warning btn-sm" onclick="clearHistory()">Очистить</button>
-                </div>
-
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:#0f0f0f; border-radius:8px;">
-                    <div>
-                        <div style="color:#fff; font-size:14px;">Полный сброс</div>
-                        <div style="color:#8b8b8b; font-size:12px;">Удалит историю, юзеров, платежи</div>
-                    </div>
-                    <button class="btn btn-danger btn-sm" onclick="resetBot()">Сбросить</button>
-                </div>
-
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:#0f0f0f; border-radius:8px;">
-                    <div>
-                        <div style="color:#fff; font-size:14px;">Удалить бота</div>
-                        <div style="color:#8b8b8b; font-size:12px;">Удалит бота и все его данные навсегда</div>
-                    </div>
-                    <button class="btn btn-danger btn-sm" onclick="deleteBot()">Удалить</button>
-                </div>
+            <div class="danger-zone">
+                <button class="btn btn-danger" onclick="clearHistory()">🗑️ Очистить всю историю</button>
+                <button class="btn btn-danger" onclick="resetBot()">💣 Полный сброс (история + юзеры)</button>
+                <button class="btn btn-danger" onclick="deleteBot()">☠️ Удалить бота навсегда</button>
             </div>
         </div>
 
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('editModal')">Закрыть</button>
+            <button class="btn btn-primary" onclick="saveBot()">💾 Сохранить</button>
+        </div>
     </div>
 </div>
 
-<!-- Модалка базы знаний -->
+<!-- ====================================================
+     МОДАЛКА: БАЗА ЗНАНИЙ (RAG)
+     ==================================================== -->
 <div class="modal-overlay" id="knowledgeModal">
-    <div class="modal" style="max-width:650px;">
+    <div class="modal modal-wide">
         <div class="modal-header">
-            <h3 id="knowledgeTitle">📚 База знаний</h3>
+            <h2 id="knowledgeTitle">📚 База знаний</h2>
             <button class="modal-close" onclick="closeModal('knowledgeModal')">✕</button>
         </div>
+        <div class="modal-body">
+            <div id="knowledgeList"></div>
 
-        <!-- список файлов -->
-        <div id="knowledgeList" style="margin-bottom:16px;"></div>
+            <hr style="border-color:#222; margin:16px 0;">
 
-        <!-- загрузка файлов -->
-        <div style="border:2px dashed #333; border-radius:12px; padding:20px; text-align:center; margin-bottom:16px; cursor:pointer;"
-             onclick="triggerFileUpload()"
-             ondragover="event.preventDefault(); this.style.borderColor='#646cff';"
-             ondragleave="this.style.borderColor='#333';"
-             ondrop="event.preventDefault(); this.style.borderColor='#333'; handleDrop(event);">
-            <p style="color:#8b8b8b;">📎 Нажмите или перетащите файлы сюда</p>
-            <p style="color:#555; font-size:11px; margin-top:4px;">.txt .md .pdf .csv .json .html</p>
-        </div>
-        <input type="file" id="knowledgeFileInput" multiple accept=".txt,.md,.pdf,.csv,.json,.html,.xml,.log"
-               style="display:none;" onchange="handleFileUpload(event)">
-
-        <!-- добавить текст -->
-        <details style="margin-bottom:16px;">
-            <summary style="color:#646cff; cursor:pointer; font-size:13px;">📝 Добавить текст вручную</summary>
-            <div style="margin-top:8px;">
-                <div class="form-group">
-                    <input type="text" id="knowledgeTextName" placeholder="Название (например: О компании)">
-                </div>
-                <div class="form-group">
-                    <textarea id="knowledgeTextContent" rows="4" placeholder="Вставьте текст сюда..."
-                              style="width:100%; background:#1a1a1a; color:#fff; border:1px solid #333;
-                                     border-radius:8px; padding:8px; font-size:13px; resize:vertical;"></textarea>
-                </div>
-                <button class="btn btn-primary btn-sm" onclick="addKnowledgeText()">Добавить</button>
+            <div class="upload-zone" ondrop="handleDrop(event)" ondragover="event.preventDefault()" onclick="triggerFileUpload()">
+                📁 Перетащите файлы сюда или кликните
+                <br><small>.txt .md .pdf .json .csv .html</small>
+                <input type="file" id="knowledgeFileInput" multiple hidden accept=".txt,.md,.pdf,.json,.csv,.html" onchange="handleFileUpload(event)">
             </div>
-        </details>
 
-        <!-- тестовый поиск -->
-        <details style="margin-bottom:16px;">
-            <summary style="color:#646cff; cursor:pointer; font-size:13px;">🔍 Тестовый поиск</summary>
-            <div style="margin-top:8px;">
+            <hr style="border-color:#222; margin:16px 0;">
+
+            <div class="form-group">
+                <label>📝 Добавить текст</label>
+                <input type="text" id="knowledgeTextName" placeholder="Название (FAQ, правила и т.д.)">
+                <textarea id="knowledgeTextContent" rows="3" placeholder="Текст..." style="margin-top:8px;"></textarea>
+                <button class="btn btn-primary btn-sm" onclick="addKnowledgeText()" style="margin-top:8px;">➕ Добавить</button>
+            </div>
+
+            <hr style="border-color:#222; margin:16px 0;">
+
+            <div class="form-group">
+                <label>🔍 Тест поиска</label>
                 <div style="display:flex; gap:8px;">
-                    <input type="text" id="knowledgeSearchQuery" placeholder="Введите запрос..."
-                           style="flex:1;" onkeydown="if(event.key==='Enter') testSearch()">
-                    <button class="btn btn-primary btn-sm" onclick="testSearch()">Искать</button>
+                    <input type="text" id="knowledgeSearchQuery" placeholder="Введите запрос...">
+                    <button class="btn btn-ghost btn-sm" onclick="testSearch()">🔍</button>
                 </div>
                 <div id="knowledgeSearchResults" style="margin-top:8px;"></div>
             </div>
-        </details>
-
-        <!-- действия -->
-        <div style="display:flex; gap:8px; justify-content:flex-end;">
+        </div>
+        <div class="modal-footer">
             <button class="btn btn-danger btn-sm" onclick="clearKnowledge()">🗑️ Очистить всё</button>
             <button class="btn btn-ghost" onclick="closeModal('knowledgeModal')">Закрыть</button>
         </div>
     </div>
 </div>
 
-<!-- ============================
-     ТОСТЫ
-     ============================ -->
-<div class="toast-container" id="toasts"></div>
+<!-- Тосты -->
+<div class="toasts" id="toasts"></div>
 
-<!-- ============================
-     СКРИПТ
-     ============================ -->
 <script src="/static/app.js"></script>
 
 </body>

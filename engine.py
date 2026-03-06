@@ -192,15 +192,17 @@ class BotInstance:
         self.config = config
         self.bot_id = config["bot_id"]
 
-        # мозг — ВСЕГДА работает
+        # мозг — ВСЕГДА работает (с поддержкой провайдера)
         self.brain = Brain(
             bot_id=self.bot_id,
             api_key=config["api_key"],
             model=config["model"],
             system_prompt=config["system_prompt"],
-            max_history=config["max_history"],
-            free_messages=config["free_messages"],
+            max_history=config.get("max_history", 20),
+            free_messages=config.get("free_messages", 20),
             rag_top_k=config.get("rag_top_k", 3),
+            provider=config.get("provider", "openrouter"),
+            custom_base_url=config.get("custom_base_url", ""),
         )
 
         # telegram — ОПЦИОНАЛЬНО
@@ -226,12 +228,41 @@ class BotInstance:
             self.telegram = None
 
     def reload_config(self, config: dict):
-        """Обновляет настройки"""
+        """Обновляет настройки (включая смену провайдера)"""
+        old_provider = self.config.get("provider", "openrouter")
+        old_key = self.config.get("api_key", "")
+        old_base_url = self.config.get("custom_base_url", "")
+
         self.config = config
-        self.brain.update_model(config["model"])
-        self.brain.update_prompt(config["system_prompt"])
-        self.brain.update_free_limit(config["free_messages"])
-        self.brain.update_max_history(config["max_history"])
+
+        # если сменился провайдер/ключ/url — пересоздаём AI клиент
+        new_provider = config.get("provider", "openrouter")
+        new_key = config.get("api_key", "")
+        new_base_url = config.get("custom_base_url", "")
+
+        if (old_provider != new_provider or
+            old_key != new_key or
+            old_base_url != new_base_url):
+            # пересоздаём brain с новым провайдером
+            self.brain = Brain(
+                bot_id=self.bot_id,
+                api_key=new_key,
+                model=config["model"],
+                system_prompt=config["system_prompt"],
+                max_history=config.get("max_history", 20),
+                free_messages=config.get("free_messages", 20),
+                rag_top_k=config.get("rag_top_k", 3),
+                provider=new_provider,
+                custom_base_url=new_base_url,
+            )
+            logger.info(f"♻️ Bot {self.bot_id} provider changed: {old_provider} → {new_provider}")
+        else:
+            # просто обновляем параметры
+            self.brain.update_model(config["model"])
+            self.brain.update_prompt(config["system_prompt"])
+            self.brain.update_free_limit(config.get("free_messages", 20))
+            self.brain.update_max_history(config.get("max_history", 20))
+
         logger.info(f"♻️ Bot {self.bot_id} config reloaded")
 
 
@@ -261,7 +292,7 @@ class Engine:
         config["is_running"] = True
         save_config(bot_id, config)
 
-        logger.info(f"🟢 Bot {bot_id} ({config['name']}) activated")
+        logger.info(f"🟢 Bot {bot_id} ({config['name']}) activated — provider: {config.get('provider', 'openrouter')}")
         return True
 
     def deactivate_bot(self, bot_id: str) -> bool:
@@ -269,7 +300,6 @@ class Engine:
         if bot_id not in self.instances:
             return False
 
-        # останавливаем telegram если был
         self.instances[bot_id].stop_telegram()
         del self.instances[bot_id]
 
@@ -284,7 +314,6 @@ class Engine:
     def start_telegram(self, bot_id: str) -> bool:
         """Подключает Telegram к боту"""
         if bot_id not in self.instances:
-            # сначала активируем
             if not self.activate_bot(bot_id):
                 return False
 
@@ -329,6 +358,7 @@ class Engine:
             "telegram_connected": tg_running,
             "has_token": bool(config.get("bot_token")),
             "model": config["model"],
+            "provider": config.get("provider", "openrouter"),
             "stats": stats
         }
 
@@ -342,7 +372,6 @@ class Engine:
         for config in list_bots():
             if config.get("is_running", False):
                 self.activate_bot(config["bot_id"])
-                # если есть токен — подключаем telegram
                 if config.get("bot_token") and config.get("enable_telegram", False):
                     self.start_telegram(config["bot_id"])
 

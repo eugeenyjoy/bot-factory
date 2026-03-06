@@ -1,11 +1,16 @@
 """
 Конфигурация — загрузка/сохранение настроек ботов
 Каждый бот хранит свои настройки в bots/bot_xxx/config.json
+Модели фетчатся с OpenRouter API автоматически
 """
 
 import json
+import time
+import logging
+import requests
 from pathlib import Path
 
+logger = logging.getLogger("config")
 
 # корневая папка проекта
 ROOT_DIR = Path(__file__).parent.parent
@@ -14,12 +19,74 @@ ROOT_DIR = Path(__file__).parent.parent
 BOTS_DIR = ROOT_DIR / "bots"
 
 
-# дефолтные настройки нового бота
+# ============================================================
+#  ПРОВАЙДЕРЫ AI — разные API endpoint'ы
+# ============================================================
+
+AI_PROVIDERS = {
+    "openrouter": {
+        "name": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "models_url": "https://openrouter.ai/api/v1/models",
+        "key_prefix": "sk-or-",
+        "description": "Универсальный. Доступ ко всем моделям через один ключ.",
+    },
+    "openai": {
+        "name": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
+        "models_url": "https://api.openai.com/v1/models",
+        "key_prefix": "sk-",
+        "description": "Прямой доступ к GPT-4, o4-mini и др.",
+    },
+    "anthropic": {
+        "name": "Anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "models_url": None,
+        "key_prefix": "sk-ant-",
+        "description": "Прямой доступ к Claude Sonnet, Haiku.",
+    },
+    "deepseek": {
+        "name": "DeepSeek",
+        "base_url": "https://api.deepseek.com/v1",
+        "models_url": None,
+        "key_prefix": "",
+        "description": "Прямой доступ к DeepSeek V3, R1.",
+    },
+    "xai": {
+        "name": "xAI (Grok)",
+        "base_url": "https://api.x.ai/v1",
+        "models_url": None,
+        "key_prefix": "xai-",
+        "description": "Прямой доступ к Grok 4, Grok 3.",
+    },
+    "google": {
+        "name": "Google AI Studio",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "models_url": None,
+        "key_prefix": "AI",
+        "description": "Прямой доступ к Gemini. ⚠️ Нужен VPN из РФ.",
+    },
+    "custom": {
+        "name": "Свой API (OpenAI-совместимый)",
+        "base_url": "",
+        "models_url": None,
+        "key_prefix": "",
+        "description": "Любой OpenAI-совместимый API. Укажите base_url.",
+    },
+}
+
+
+# ============================================================
+#  ДЕФОЛТНЫЙ КОНФИГ БОТА
+# ============================================================
+
 DEFAULT_CONFIG = {
     "bot_id": "",
     "name": "Новый бот",
     "bot_token": "",
     "api_key": "",
+    "provider": "openrouter",
+    "custom_base_url": "",
     "model": "mistralai/mistral-nemo",
     "system_prompt": "Ты — полезный AI ассистент.",
     "max_history": 20,
@@ -29,6 +96,7 @@ DEFAULT_CONFIG = {
     "is_running": False,
     "enable_telegram": False,
     "enable_groups": False,
+    "enable_web_chat": False,
     "vip_users": [],
     # RAG настройки
     "rag_chunk_size": 500,
@@ -38,645 +106,293 @@ DEFAULT_CONFIG = {
 
 
 # ============================================================
-#  КАТАЛОГ МОДЕЛЕЙ OpenRouter — июль 2025
-#
-#  Уровни цензуры:
-#    ✦ ZERO   = абсолютный ноль, отвечает на ВСЁ без предупреждений
-#    🔓 НЕТ   = без цензуры, иногда мягкие оговорки
-#    🔒 ДА    = есть отказы на опасные темы
-#
-#  Цена: вход→выход за 1M токенов
-#  Рейтинг 1-10 внутри категории
+#  АВТОМАТИЧЕСКОЕ ОПРЕДЕЛЕНИЕ КАТЕГОРИЙ
+#  Ключевые слова в названии/id модели → категория
 # ============================================================
 
-AVAILABLE_MODELS = [
+CATEGORY_RULES = {
+    "reasoning": {
+        "keywords": ["o1", "o3", "o4", "r1", "r1-", "reason", "think", "qwq"],
+        "label": "🧮 Логика / Математика / Reasoning",
+    },
+    "code": {
+        "keywords": ["code", "codex", "coder", "starcoder", "codestral", "devstral"],
+        "label": "💻 Код / Программирование",
+    },
+    "creative": {
+        "keywords": ["roleplay", "rp", "creative", "story", "hermes", "mytho",
+                      "rocinante", "lumimaid", "noromaid", "psyfighter",
+                      "fimbulvetr", "midnight", "nemotron"],
+        "label": "🎭 Ролеплей / Креатив / Истории",
+    },
+    "uncensored": {
+        "keywords": ["dolphin", "abliterated", "uncensored"],
+        "label": "🔥 Без цензуры (ZERO)",
+    },
+    "analytics": {
+        "keywords": ["gemini", "search", "online"],
+        "label": "📊 Аналитика / Документы / RAG",
+    },
+}
 
-    # ══════════════════════════════════════════
-    #  💬 СОБЕСЕДНИК / ПСИХОЛОГИЯ / САМОАНАЛИЗ
-    # ══════════════════════════════════════════
+# модели которые точно без цензуры
+UNCENSORED_IDS = {
+    "x-ai/", "grok",
+    "nousresearch/hermes",
+    "deepseek/",
+    "mistralai/mistral-nemo", "mistralai/mistral-small",
+    "mistralai/mistral-large", "mistralai/mixtral",
+    "meta-llama/",
+    "thedrummer/", "eva-unit",
+    "cognitivecomputations/dolphin",
+}
 
-    {
-        "id": "anthropic/claude-sonnet-4",
-        "name": "Claude Sonnet 4 🔒",
-        "price": "$3→$15",
-        "censored": True,
-        "category": "psychology",
-        "rating": 10,
-        "description": "Лучший для эмпатии и глубоких бесед. Дорогой.",
-    },
-    {
-        "id": "openai/gpt-4o",
-        "name": "GPT-4o 🔒",
-        "price": "$2.50→$10",
-        "censored": True,
-        "category": "psychology",
-        "rating": 9,
-        "description": "Умный собеседник, хорошо понимает контекст.",
-    },
-    {
-        "id": "x-ai/grok-3-fast",
-        "name": "Grok 3 Fast 🔓",
-        "price": "$0.30→$1.50",
-        "censored": False,
-        "category": "psychology",
-        "rating": 9,
-        "description": "Быстрый Grok. Без цензуры, с юмором.",
-    },
-    {
-        "id": "anthropic/claude-3.5-haiku",
-        "name": "Claude 3.5 Haiku 🔒",
-        "price": "$0.80→$4",
-        "censored": True,
-        "category": "psychology",
-        "rating": 8,
-        "description": "Дешёвый Claude. Быстрый, эмпатичный.",
-    },
-    {
-        "id": "google/gemini-2.5-flash-preview",
-        "name": "Gemini 2.5 Flash 🔒",
-        "price": "$0.15→$0.60",
-        "censored": True,
-        "category": "psychology",
-        "rating": 7,
-        "description": "Очень дешёвый и умный. ⚠️ Нужен VPN из-за Google.",
-    },
-    {
-        "id": "nousresearch/hermes-3-llama-3.1-70b",
-        "name": "Hermes 70B 🔓",
-        "price": "$0.40→$0.40",
-        "censored": False,
-        "category": "psychology",
-        "rating": 7,
-        "description": "Без цензуры. Для откровенных разговоров.",
-    },
-    {
-        "id": "mistralai/mistral-nemo",
-        "name": "Mistral Nemo 🔓",
-        "price": "$0.03→$0.03",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "3 цента! Без цензуры. Самая дешёвая рабочая модель.",
-    },
-    {
-        "id": "mistralai/mistral-small-3.1-24b-instruct",
-        "name": "Mistral Small 24B 🔓",
-        "price": "$0.10→$0.30",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "Без цензуры. Дешёвая и умная.",
-    },
-    {
-        "id": "x-ai/grok-3-mini",
-        "name": "Grok 3 Mini 🔓",
-        "price": "$0.10→$0.50",
-        "censored": False,
-        "category": "psychology",
-        "rating": 6,
-        "description": "Дешёвый Grok. Без цензуры.",
-    },
-    {
-        "id": "openai/gpt-4o-mini",
-        "name": "GPT-4o Mini 🔒",
-        "price": "$0.15→$0.60",
-        "censored": True,
-        "category": "psychology",
-        "rating": 6,
-        "description": "Дешёвый и быстрый. Хороший собеседник.",
-    },
-    {
-        "id": "qwen/qwen3-8b:free",
-        "name": "Qwen 3 8B (FREE) 🔒",
-        "price": "FREE",
-        "censored": True,
-        "category": "psychology",
-        "rating": 5,
-        "description": "Бесплатный, хорош для русского. Для тестов.",
-    },
-    {
-        "id": "meta-llama/llama-3.3-70b-instruct:free",
-        "name": "Llama 3.3 70B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "uncensored", 
-        "rating": 5,
-        "description": "Бесплатная 70B без цензуры.",
-    },
-    {
-        "id": "meta-llama/llama-3.3-70b-instruct:free",
-        "name": "Llama 3.3 70B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "psychology",
-        "rating": 4,
-        "description": "Бесплатный, без цензуры. Простенький но работает.",
-    },
+# модели которые точно С цензурой
+CENSORED_IDS = {
+    "openai/gpt", "openai/o1", "openai/o3", "openai/o4",
+    "anthropic/claude",
+    "google/gemini", "google/gemma",
+    "qwen/",
+}
 
-    # ══════════════════════════════════════════
-    #  💻 КОД / ПРОГРАММИРОВАНИЕ
-    # ══════════════════════════════════════════
 
-    {
-        "id": "anthropic/claude-sonnet-4",
-        "name": "Claude Sonnet 4 🔒",
-        "price": "$3→$15",
-        "censored": True,
-        "category": "code",
-        "rating": 10,
-        "description": "Лучший для кода. Точный, мало ошибок.",
-    },
-    {
-        "id": "x-ai/grok-4-0709",
-        "name": "Grok 4 🔓",
-        "price": "$3→$12",
-        "censored": False,
-        "category": "code",
-        "rating": 10,
-        "description": "Топ-модель от xAI. Без цензуры. Мощнейшая.",
-    },
-    {
-        "id": "openai/gpt-4.1",
-        "name": "GPT-4.1 🔒",
-        "price": "$2→$8",
-        "censored": True,
-        "category": "code",
-        "rating": 9,
-        "description": "Новейшая GPT, отличный код и рефакторинг.",
-    },
-    {
-        "id": "deepseek/deepseek-chat-v3-0324",
-        "name": "DeepSeek V3 🔓",
-        "price": "$0.14→$0.28",
-        "censored": False,
-        "category": "code",
-        "rating": 9,
-        "description": "Топ за свою цену! Без цензуры. Лучшая цена/качество.",
-    },
-    {
-        "id": "deepseek/deepseek-r1",
-        "name": "DeepSeek R1 🔓",
-        "price": "$0.55→$2.19",
-        "censored": False,
-        "category": "code",
-        "rating": 9,
-        "description": "Думает пошагово. Для сложных алгоритмов.",
-    },
-    {
-        "id": "x-ai/grok-4.1-fast",
-        "name": "Grok 4.1 Fast 🔓",
-        "price": "$0.20→$0.80",
-        "censored": False,
-        "category": "code",
-        "rating": 8,
-        "description": "Быстрый и дешёвый Grok. Без цензуры.",
-    },
-    {
-        "id": "qwen/qwen3-32b",
-        "name": "Qwen 3 32B 🔒",
-        "price": "$0.07→$0.10",
-        "censored": True,
-        "category": "code",
-        "rating": 8,
-        "description": "Очень дешёвый! Хорош для Python и веб.",
-    },
-    {
-        "id": "google/gemini-2.5-flash-preview",
-        "name": "Gemini 2.5 Flash 🔒",
-        "price": "$0.15→$0.60",
-        "censored": True,
-        "category": "code",
-        "rating": 8,
-        "description": "Дешёвый, быстрый, большой контекст. ⚠️ VPN.",
-    },
-    {
-        "id": "openai/gpt-4o-mini",
-        "name": "GPT-4o Mini 🔒",
-        "price": "$0.15→$0.60",
-        "censored": True,
-        "category": "code",
-        "rating": 7,
-        "description": "Дёшево и быстро. Для простых скриптов.",
-    },
-    {
-        "id": "mistralai/mistral-small-3.1-24b-instruct:free",
-        "name": "Mistral Small 24B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "code",
-        "rating": 4,
-        "description": "Бесплатный, без цензуры. Простой код.",
-    },
+# ============================================================
+#  КЭШ МОДЕЛЕЙ — обновляется раз в час
+# ============================================================
 
-    # ══════════════════════════════════════════
-    #  🎭 РОЛЕПЛЕЙ / КРЕАТИВ / ИСТОРИИ
-    # ══════════════════════════════════════════
+_models_cache = {
+    "data": [],
+    "timestamp": 0,
+    "ttl": 3600,  # 1 час
+}
 
-    {
-        "id": "thedrummer/rocinante-12b",
-        "name": "Rocinante 12B ✦ZERO",
-        "price": "$0.05→$0.05",
-        "censored": False,
-        "category": "creative",
-        "rating": 10,
-        "description": "АБСОЛЮТНЫЙ НОЛЬ цензуры. Заточен под ролеплей. 5 центов!",
-    },
-    {
-        "id": "nousresearch/hermes-3-llama-3.1-405b",
-        "name": "Hermes 405B 🔓",
-        "price": "$0.90→$0.90",
-        "censored": False,
-        "category": "creative",
-        "rating": 10,
-        "description": "Огромная 405B. Топ для ролеплея. Без цензуры.",
-    },
-    {
-        "id": "mistralai/mistral-nemo",
-        "name": "Mistral Nemo 🔓",
-        "price": "$0.03→$0.03",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "3 цента! Без цензуры. Самая дешёвая рабочая модель.",
-    },
-    {
-        "id": "mistralai/mistral-small-3.1-24b-instruct",
-        "name": "Mistral Small 24B 🔓",
-        "price": "$0.10→$0.30",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "Без цензуры. Дешёвая и умная.",
-    },
-    {
-        "id": "x-ai/grok-3-fast",
-        "name": "Grok 3 Fast 🔓",
-        "price": "$0.30→$1.50",
-        "censored": False,
-        "category": "creative",
-        "rating": 8,
-        "description": "Grok без цензуры. Юмор, креатив.",
-    },
-    {
-        "id": "nousresearch/hermes-3-llama-3.1-70b",
-        "name": "Hermes 70B 🔓",
-        "price": "$0.40→$0.40",
-        "censored": False,
-        "category": "creative",
-        "rating": 9,
-        "description": "Отличный ролеплей за дешёво. Живые персонажи.",
-    },
-    {
-        "id": "eva-unit-01/eva-llama-3.33-70b",
-        "name": "EVA 70B ✦ZERO",
-        "price": "$0.40→$0.40",
-        "censored": False,
-        "category": "creative",
-        "rating": 8,
-        "description": "НОЛЬ цензуры. 70B модель, умная и без ограничений.",
-    },
-    {
-        "id": "mistralai/mistral-large",
-        "name": "Mistral Large 🔓",
-        "price": "$2→$6",
-        "censored": False,
-        "category": "creative",
-        "rating": 8,
-        "description": "Креативный, красивый стиль текста.",
-    },
-    {
-        "id": "mistralai/mixtral-8x7b-instruct",
-        "name": "Mixtral 8x7B 🔓",
-        "price": "$0.24→$0.24",
-        "censored": False,
-        "category": "creative",
-        "rating": 7,
-        "description": "Бюджетный креатив без цензуры.",
-    },
-    {
-        "id": "nousresearch/hermes-3-llama-3.1-405b:free",
-        "name": "Hermes 405B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "creative",
-        "rating": 7,
-        "description": "Бесплатная 405B! Без цензуры. Медленная но мощная.",
-    },
-    {
-        "id": "nvidia/llama-3.1-nemotron-70b-instruct:free",
-        "name": "Nemotron 70B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "creative",
-        "rating": 6,
-        "description": "Бесплатная! Большая модель, хороша для креатива.",
-    },
-    {
-        "id": "meta-llama/llama-3.3-70b-instruct:free",
-        "name": "Llama 3.3 70B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "uncensored", 
-        "rating": 5,
-        "description": "Бесплатная 70B без цензуры.",
-    },
 
-    # ══════════════════════════════════════════
-    #  📊 АНАЛИТИКА / ДОКУМЕНТЫ / RAG
-    # ══════════════════════════════════════════
+def fetch_models_from_openrouter() -> list:
+    """Фетчит модели с OpenRouter API и парсит в наш формат"""
 
-    {
-        "id": "google/gemini-2.5-pro-preview",
-        "name": "Gemini 2.5 Pro 🔒",
-        "price": "$1.25→$10",
-        "censored": True,
-        "category": "analytics",
-        "rating": 10,
-        "description": "Контекст 1M токенов! Для огромных документов. ⚠️ VPN.",
-    },
-    {
-        "id": "x-ai/grok-4-0709",
-        "name": "Grok 4 🔓",
-        "price": "$3→$12",
-        "censored": False,
-        "category": "analytics",
-        "rating": 10,
-        "description": "Мощнейшая модель xAI. Без цензуры.",
-    },
-    {
-        "id": "google/gemini-2.5-flash-preview",
-        "name": "Gemini 2.5 Flash 🔒",
-        "price": "$0.15→$0.60",
-        "censored": True,
-        "category": "analytics",
-        "rating": 9,
-        "description": "Дешёвый, быстрый, контекст 1M. ⚠️ VPN.",
-    },
-    {
-        "id": "deepseek/deepseek-chat-v3-0324",
-        "name": "DeepSeek V3 🔓",
-        "price": "$0.14→$0.28",
-        "censored": False,
-        "category": "analytics",
-        "rating": 9,
-        "description": "Дешёвый, большой контекст. Без цензуры.",
-    },
-    {
-        "id": "anthropic/claude-3.5-haiku",
-        "name": "Claude 3.5 Haiku 🔒",
-        "price": "$0.80→$4",
-        "censored": True,
-        "category": "analytics",
-        "rating": 8,
-        "description": "Точный и быстрый. Хорош для суммаризации.",
-    },
-    {
-        "id": "x-ai/grok-4.1-fast",
-        "name": "Grok 4.1 Fast 🔓",
-        "price": "$0.20→$0.80",
-        "censored": False,
-        "category": "analytics",
-        "rating": 8,
-        "description": "Быстрый Grok для анализа. Без цензуры.",
-    },
-    {
-        "id": "qwen/qwen3-32b",
-        "name": "Qwen 3 32B 🔒",
-        "price": "$0.07→$0.10",
-        "censored": True,
-        "category": "analytics",
-        "rating": 7,
-        "description": "Очень дешёвый, хорош для русских документов.",
-    },
-    {
-        "id": "openai/gpt-4o-mini",
-        "name": "GPT-4o Mini 🔒",
-        "price": "$0.15→$0.60",
-        "censored": True,
-        "category": "analytics",
-        "rating": 7,
-        "description": "Дешёвый, быстрый. Для суммаризации.",
-    },
-    {
-        "id": "qwen/qwen3-30b-a3b:free",
-        "name": "Qwen 3 30B (FREE) 🔒",
-        "price": "FREE",
-        "censored": True,
-        "category": "analytics",
-        "rating": 5,
-        "description": "Бесплатная. Для простого анализа текста.",
-    },
+    now = time.time()
 
-    # ══════════════════════════════════════════
-    #  🧮 ЛОГИКА / МАТЕМАТИКА / REASONING
-    # ══════════════════════════════════════════
+    # возвращаем из кэша если свежий
+    if _models_cache["data"] and (now - _models_cache["timestamp"]) < _models_cache["ttl"]:
+        return _models_cache["data"]
 
-    {
-        "id": "x-ai/grok-4-0709",
-        "name": "Grok 4 🔓",
-        "price": "$3→$12",
-        "censored": False,
-        "category": "reasoning",
-        "rating": 10,
-        "description": "Топ reasoning. Без цензуры. Самая мощная.",
-    },
-    {
-        "id": "deepseek/deepseek-r1",
-        "name": "DeepSeek R1 🔓",
-        "price": "$0.55→$2.19",
-        "censored": False,
-        "category": "reasoning",
-        "rating": 10,
-        "description": "Думает пошагово. Без цензуры. Лучшая цена/качество.",
-    },
-    {
-        "id": "openai/o4-mini",
-        "name": "OpenAI o4 Mini 🔒",
-        "price": "$1.10→$4.40",
-        "censored": True,
-        "category": "reasoning",
-        "rating": 9,
-        "description": "Reasoning от OpenAI. Логика, планирование.",
-    },
-    {
-        "id": "x-ai/grok-3-mini",
-        "name": "Grok 3 Mini 🔓",
-        "price": "$0.10→$0.50",
-        "censored": False,
-        "category": "reasoning",
-        "rating": 8,
-        "description": "Дешёвый reasoning без цензуры.",
-    },
-    {
-        "id": "mistralai/mistral-nemo",
-        "name": "Mistral Nemo 🔓",
-        "price": "$0.03→$0.03",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "3 цента! Без цензуры. Самая дешёвая рабочая модель.",
-    },
-    {
-        "id": "mistralai/mistral-small-3.1-24b-instruct",
-        "name": "Mistral Small 24B 🔓",
-        "price": "$0.10→$0.30",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "Без цензуры. Дешёвая и умная.",
-    },
-    {
-        "id": "qwen/qwen3-32b",
-        "name": "Qwen 3 32B 🔒",
-        "price": "$0.07→$0.10",
-        "censored": True,
-        "category": "reasoning",
-        "rating": 7,
-        "description": "Самый дешёвый для логики. 7 центов!",
-    },
-    {
-        "id": "meta-llama/llama-3.3-70b-instruct:free",
-        "name": "Llama 3.3 70B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "reasoning",
-        "rating": 5,
-        "description": "Бесплатная большая модель. Без цензуры.",
-    },
-    {
-        "id": "qwen/qwen3-30b-a3b:free",
-        "name": "Qwen 3 30B (FREE) 🔒",
-        "price": "FREE",
-        "censored": True,
-        "category": "reasoning",
-        "rating": 5,
-        "description": "Бесплатный. Простая математика.",
-    },
+    try:
+        logger.info("Fetching models from OpenRouter...")
+        resp = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Accept": "application/json"},
+            timeout=15
+        )
+        resp.raise_for_status()
+        raw_models = resp.json().get("data", [])
+    except Exception as e:
+        logger.error(f"Failed to fetch models: {e}")
+        # если кэш есть — возвращаем старый
+        if _models_cache["data"]:
+            return _models_cache["data"]
+        # иначе возвращаем хардкод-минимум
+        return _get_fallback_models()
 
-    # ══════════════════════════════════════════
-    #  🔥 АБСОЛЮТНО БЕЗ ЦЕНЗУРЫ (отдельная категория)
-    # ══════════════════════════════════════════
+    parsed = []
 
-    {
-        "id": "thedrummer/rocinante-12b",
-        "name": "Rocinante 12B ✦ZERO",
-        "price": "$0.05→$0.05",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 10,
-        "description": "АБСОЛЮТНЫЙ НОЛЬ. 5 центов. Ответит на ВСЁ без предупреждений.",
-    },
-    {
-        "id": "mistralai/mistral-nemo",
-        "name": "Mistral Nemo 🔓",
-        "price": "$0.03→$0.03",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "3 цента! Без цензуры. Самая дешёвая рабочая модель.",
-    },
-    {
-        "id": "mistralai/mistral-small-3.1-24b-instruct",
-        "name": "Mistral Small 24B 🔓",
-        "price": "$0.10→$0.30",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "Без цензуры. Дешёвая и умная.",
-    },
-    {
-        "id": "eva-unit-01/eva-llama-3.33-70b",
-        "name": "EVA 70B ✦ZERO",
-        "price": "$0.40→$0.40",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 8,
-        "description": "70B без цензуры. Умная + абсолютно без ограничений.",
-    },
-    {
-        "id": "x-ai/grok-4-0709",
-        "name": "Grok 4 🔓",
-        "price": "$3→$12",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 10,
-        "description": "Самая мощная uncensored. Grok от Маска.",
-    },
-    {
-        "id": "x-ai/grok-4.1-fast",
-        "name": "Grok 4.1 Fast 🔓",
-        "price": "$0.20→$0.80",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 8,
-        "description": "Быстрый Grok без цензуры. Отличная цена.",
-    },
-    {
-        "id": "x-ai/grok-3-fast",
-        "name": "Grok 3 Fast 🔓",
-        "price": "$0.30→$1.50",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "Grok 3 без цензуры. С юмором.",
-    },
-    {
-        "id": "x-ai/grok-3-mini",
-        "name": "Grok 3 Mini 🔓",
-        "price": "$0.10→$0.50",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 6,
-        "description": "Самый дешёвый Grok. Без цензуры.",
-    },
-    {
-        "id": "nousresearch/hermes-3-llama-3.1-405b",
-        "name": "Hermes 405B 🔓",
-        "price": "$0.90→$0.90",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 9,
-        "description": "405B без цензуры. Мощная.",
-    },
-    {
-        "id": "nousresearch/hermes-3-llama-3.1-70b",
-        "name": "Hermes 70B 🔓",
-        "price": "$0.40→$0.40",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 7,
-        "description": "70B без цензуры. Дешёвая.",
-    },
-    {
-        "id": "nousresearch/hermes-3-llama-3.1-405b:free",
-        "name": "Hermes 405B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "uncensored",
-        "rating": 6,
-        "description": "Бесплатная 405B без цензуры!",
-    },
-    {
-        "id": "meta-llama/llama-3.3-70b-instruct:free",
-        "name": "Llama 3.3 70B 🔓 (FREE)",
-        "price": "FREE",
-        "censored": False,
-        "category": "uncensored", 
-        "rating": 5,
-        "description": "Бесплатная 70B без цензуры.",
-    },
-]
+    for m in raw_models:
+        model_id = m.get("id", "")
+        name = m.get("name", model_id)
+
+        # пропускаем устаревшие и тестовые
+        if any(skip in model_id for skip in [":beta", ":extended", "/auto", "openrouter/"]):
+            continue
+
+        # цена
+        prompt_price = float(m.get("pricing", {}).get("prompt", 0)) * 1_000_000
+        completion_price = float(m.get("pricing", {}).get("completion", 0)) * 1_000_000
+        is_free = (prompt_price == 0 and completion_price == 0)
+
+        if is_free:
+            price_str = "FREE"
+        else:
+            price_str = f"${prompt_price:.2f}→${completion_price:.2f}"
+
+        # контекст
+        context = m.get("context_length", 0)
+
+        # определяем цензуру
+        censored = _detect_censorship(model_id, name)
+
+        # определяем категорию
+        category = _detect_category(model_id, name)
+
+        # рейтинг на основе цены и контекста
+        rating = _calc_rating(prompt_price, completion_price, context, model_id)
+
+        # метка цензуры в имени
+        if not censored:
+            censor_tag = " 🔓"
+        else:
+            censor_tag = ""
+
+        if is_free:
+            free_tag = " (FREE)"
+        else:
+            free_tag = ""
+
+        # описание
+        desc_parts = []
+        if context >= 1_000_000:
+            desc_parts.append(f"Контекст {context // 1_000_000}M токенов")
+        elif context >= 100_000:
+            desc_parts.append(f"Контекст {context // 1000}K")
+
+        if not censored:
+            desc_parts.append("Без цензуры")
+        if is_free:
+            desc_parts.append("Бесплатная")
+
+        description = ". ".join(desc_parts) if desc_parts else ""
+
+        parsed.append({
+            "id": model_id,
+            "name": f"{name}{censor_tag}{free_tag}",
+            "price": price_str,
+            "censored": censored,
+            "category": category,
+            "rating": rating,
+            "description": description,
+            "context_length": context,
+            "is_free": is_free,
+            "prompt_price": prompt_price,
+            "completion_price": completion_price,
+        })
+
+    # сортируем: сначала дешёвые, потом дорогие
+    parsed.sort(key=lambda x: (x["category"], -x["rating"], x["prompt_price"]))
+
+    # обновляем кэш
+    _models_cache["data"] = parsed
+    _models_cache["timestamp"] = now
+
+    logger.info(f"Loaded {len(parsed)} models from OpenRouter")
+    return parsed
+
+
+def _detect_censorship(model_id: str, name: str) -> bool:
+    """True = цензура есть, False = без цензуры"""
+    mid = model_id.lower()
+    nlow = name.lower()
+
+    # точно без цензуры
+    for pattern in UNCENSORED_IDS:
+        if pattern in mid:
+            return False
+
+    # точно с цензурой
+    for pattern in CENSORED_IDS:
+        if pattern in mid:
+            return True
+
+    # ключевые слова
+    uncensored_words = ["uncensored", "abliterated", "dolphin", "hermes",
+                        "roleplay", "nsfw", "unfiltered"]
+    for word in uncensored_words:
+        if word in mid or word in nlow:
+            return False
+
+    # по умолчанию — цензура есть
+    return True
+
+
+def _detect_category(model_id: str, name: str) -> str:
+    """Определяет категорию модели по ключевым словам"""
+    mid = model_id.lower()
+    nlow = name.lower()
+    combined = f"{mid} {nlow}"
+
+    for cat_key, cat_info in CATEGORY_RULES.items():
+        for keyword in cat_info["keywords"]:
+            if keyword in combined:
+                return cat_key
+
+    # по умолчанию — собеседник
+    return "psychology"
+
+
+def _calc_rating(prompt_price: float, completion_price: float,
+                 context: int, model_id: str) -> int:
+    """Рейтинг 1-10 на основе цены и возможностей"""
+
+    # топовые модели
+    top_models = ["claude-sonnet-4", "gpt-4.1", "gpt-4o", "grok-4",
+                  "deepseek-r1", "deepseek-chat-v3", "hermes-3-llama-3.1-405b"]
+    for top in top_models:
+        if top in model_id:
+            return 10
+
+    # хорошие модели
+    good_models = ["claude-3.5-haiku", "grok-3", "grok-4.1-fast",
+                   "mistral-large", "qwen3-32b", "llama-3.3-70b",
+                   "hermes-3-llama-3.1-70b", "gemini-2.5"]
+    for good in good_models:
+        if good in model_id:
+            return 8
+
+    total_price = prompt_price + completion_price
+
+    if total_price == 0:
+        return 5  # бесплатные — средний рейтинг
+    elif total_price < 0.5:
+        return 7  # дешёвые
+    elif total_price < 2:
+        return 6
+    elif total_price < 10:
+        return 8
+    else:
+        return 9  # дорогие обычно лучше
+
+    return 5
+
 
 # категории для отображения в панели
 MODEL_CATEGORIES = {
-    "psychology": "💬 Собеседник / Психология / Самоанализ",
+    "uncensored": "🔥 Без цензуры",
+    "psychology": "💬 Собеседник / Универсальная",
     "code":       "💻 Код / Программирование",
     "creative":   "🎭 Ролеплей / Креатив / Истории",
     "analytics":  "📊 Аналитика / Документы / RAG",
     "reasoning":  "🧮 Логика / Математика / Reasoning",
-    "uncensored": "🔥 Без цензуры (ZERO)",
 }
 
+
+def _get_fallback_models() -> list:
+    """Хардкод моделей на случай если OpenRouter недоступен"""
+    return [
+        {"id": "mistralai/mistral-nemo", "name": "Mistral Nemo 🔓",
+         "price": "$0.03→$0.03", "censored": False, "category": "psychology",
+         "rating": 7, "description": "Дешёвая, без цензуры.", "is_free": False,
+         "context_length": 128000, "prompt_price": 0.03, "completion_price": 0.03},
+        {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B 🔓 (FREE)",
+         "price": "FREE", "censored": False, "category": "psychology",
+         "rating": 5, "description": "Бесплатная, без цензуры.", "is_free": True,
+         "context_length": 131072, "prompt_price": 0, "completion_price": 0},
+        {"id": "qwen/qwen3-8b:free", "name": "Qwen 3 8B (FREE)",
+         "price": "FREE", "censored": True, "category": "psychology",
+         "rating": 4, "description": "Бесплатная.", "is_free": True,
+         "context_length": 32768, "prompt_price": 0, "completion_price": 0},
+    ]
+
+
+def get_models() -> list:
+    """Возвращает список моделей — автоматически с OpenRouter"""
+    return fetch_models_from_openrouter()
+
+
+def get_providers() -> dict:
+    """Возвращает список провайдеров"""
+    return AI_PROVIDERS
+
+
+# ============================================================
+#  УПРАВЛЕНИЕ БОТАМИ
+# ============================================================
 
 def list_bots() -> list:
     """Список всех ботов (читает папки в bots/)"""
@@ -698,7 +414,6 @@ def load_config(bot_id: str) -> dict:
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
-        # добавляем недостающие поля из дефолта
         for key, value in DEFAULT_CONFIG.items():
             if key not in config:
                 config[key] = value
@@ -718,7 +433,8 @@ def save_config(bot_id: str, config: dict):
 
 
 def create_bot(name: str, bot_token: str, api_key: str, model: str = None,
-               system_prompt: str = None) -> dict:
+               system_prompt: str = None, provider: str = "openrouter",
+               custom_base_url: str = "") -> dict:
     """Создаёт нового бота"""
     if bot_token and ":" in bot_token:
         bot_id = bot_token.split(":")[0]
@@ -731,6 +447,8 @@ def create_bot(name: str, bot_token: str, api_key: str, model: str = None,
     config["name"] = name
     config["bot_token"] = bot_token or ""
     config["api_key"] = api_key
+    config["provider"] = provider
+    config["custom_base_url"] = custom_base_url
 
     if model:
         config["model"] = model
@@ -761,8 +479,3 @@ def update_bot(bot_id: str, updates: dict) -> dict:
 
     save_config(bot_id, config)
     return config
-
-
-def get_models() -> list:
-    """Возвращает список доступных моделей"""
-    return AVAILABLE_MODELS
