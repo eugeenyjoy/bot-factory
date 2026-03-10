@@ -402,7 +402,165 @@ def api_get_models():
 def api_get_providers():
     return get_providers()
 
+# ====================================================
+# API — ФАЙЛОВЫЙ МЕНЕДЖЕР
+# ====================================================
 
+from fastapi import Query
+import os
+
+ALLOWED_EXTENSIONS = {'.txt', '.md', '.json', '.py', '.csv', '.html', '.yml', '.yaml', '.cfg', '.ini', '.log'}
+
+@app.get("/api/bots/{bot_id}/files")
+def api_list_files(bot_id: str, path: str = ""):
+    """Список файлов и папок бота"""
+    bot_dir = BOTS_DIR / f"bot_{bot_id}"
+    if not bot_dir.exists():
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    target = bot_dir / path
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    # защита от выхода за пределы папки бота
+    try:
+        target.resolve().relative_to(bot_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if target.is_file():
+        # возвращаем содержимое файла
+        ext = target.suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return {"type": "binary", "name": target.name, "size": target.stat().st_size}
+        try:
+            content = target.read_text(encoding='utf-8')
+            return {"type": "file", "name": target.name, "content": content, "size": len(content)}
+        except Exception:
+            return {"type": "binary", "name": target.name, "size": target.stat().st_size}
+
+    # список файлов в папке
+    items = []
+    for item in sorted(target.iterdir()):
+        rel = item.relative_to(bot_dir)
+        if item.is_dir():
+            items.append({
+                "name": item.name,
+                "type": "dir",
+                "path": str(rel),
+            })
+        else:
+            items.append({
+                "name": item.name,
+                "type": "file",
+                "path": str(rel),
+                "size": item.stat().st_size,
+                "ext": item.suffix.lower(),
+            })
+
+    return {"type": "dir", "path": path, "items": items}
+
+
+class FileWriteRequest(BaseModel):
+    path: str
+    content: str
+
+
+@app.put("/api/bots/{bot_id}/files")
+def api_write_file(bot_id: str, req: FileWriteRequest):
+    """Записать/создать файл"""
+    bot_dir = BOTS_DIR / f"bot_{bot_id}"
+    if not bot_dir.exists():
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    target = bot_dir / req.path
+
+    # защита
+    try:
+        target.resolve().relative_to(bot_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # не даём редактировать бинарники
+    ext = target.suffix.lower()
+    if ext and ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Cannot edit {ext} files")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(req.content, encoding='utf-8')
+    return {"ok": True, "size": len(req.content)}
+
+
+class FileDeleteRequest(BaseModel):
+    path: str
+
+
+@app.delete("/api/bots/{bot_id}/files")
+def api_delete_file(bot_id: str, req: FileDeleteRequest):
+    """Удалить файл"""
+    bot_dir = BOTS_DIR / f"bot_{bot_id}"
+    target = bot_dir / req.path
+
+    try:
+        target.resolve().relative_to(bot_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if target.is_dir():
+        import shutil
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+
+    return {"ok": True}
+
+
+# ====================================================
+# API — СИСТЕМНЫЕ ФАЙЛЫ ПРОЕКТА (только чтение)
+# ====================================================
+
+@app.get("/api/system/files")
+def api_system_files(path: str = ""):
+    """Просмотр файлов проекта (read-only)"""
+    target = ROOT_DIR / path
+
+    try:
+        target.resolve().relative_to(ROOT_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # скрываем чувствительные папки
+    hidden = {'venv', '__pycache__', '.git', 'node_modules', '.env'}
+
+    if target.is_file():
+        ext = target.suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS and ext not in {'.py', '.js', '.css', '.html', '.sh', '.bat'}:
+            return {"type": "binary", "name": target.name, "size": target.stat().st_size}
+        try:
+            content = target.read_text(encoding='utf-8')
+            return {"type": "file", "name": target.name, "content": content, "size": len(content), "readonly": True}
+        except Exception:
+            return {"type": "binary", "name": target.name, "size": target.stat().st_size}
+
+    items = []
+    for item in sorted(target.iterdir()):
+        if item.name in hidden or item.name.startswith('.'):
+            continue
+        rel = item.relative_to(ROOT_DIR)
+        if item.is_dir():
+            items.append({"name": item.name, "type": "dir", "path": str(rel)})
+        else:
+            items.append({
+                "name": item.name, "type": "file",
+                "path": str(rel), "size": item.stat().st_size,
+                "ext": item.suffix.lower()
+            })
+
+    return {"type": "dir", "path": path, "items": items}
+    
 # ====================================================
 # СТАТИКА — ПАНЕЛЬ УПРАВЛЕНИЯ
 # ====================================================

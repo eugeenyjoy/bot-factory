@@ -159,24 +159,27 @@ function renderBots(bots) {
                     </div>
                 </div>
                 <div class="bot-card-model">${escapeHtml(bot.model)}</div>
-                <div class="bot-card-provider" style="font-size:11px; color:#666; margin-top:2px;">via ${provider}</div>
+                <div class="bot-card-provider" style="font-size:11px; color:#555; margin-top:2px;">via ${provider}</div>
                 <div class="bot-card-stats">
                     <span>👥 ${users}</span>
                     <span>💬 ${messages}</span>
                     <span>${tg ? '🔵 TG' : bot.has_token ? '⚪ TG' : ''}</span>
                 </div>
-                <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+                <div style="margin-top:12px; display:flex; gap:6px; flex-wrap:wrap;">
                     ${active
-                        ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); stopBot('${bot.bot_id}')">⏹ Стоп</button>
-                           <a class="btn btn-primary btn-sm" href="/chat/${bot.bot_id}" target="_blank" onclick="event.stopPropagation()">💬 Чат</a>
+                        ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); stopBot('${bot.bot_id}')">⏹</button>
+                           <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTerminal('${bot.bot_id}', '${escapeHtml(bot.name)}')">🖥️ Чат</button>
+                           <a class="btn btn-ghost btn-sm" href="/chat/${bot.bot_id}" target="_blank" onclick="event.stopPropagation()">🔗</a>
+                           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openFiles('${bot.bot_id}', '${escapeHtml(bot.name)}')">📁</button>
                            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openKnowledge('${bot.bot_id}')">📚</button>
                            ${bot.has_token && !tg
-                               ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); startTelegram('${bot.bot_id}')">🔵 TG</button>`
+                               ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); startTelegram('${bot.bot_id}')">🔵</button>`
                                : ''}
                            ${tg
-                               ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); stopTelegram('${bot.bot_id}')">⏹ TG</button>`
+                               ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); stopTelegram('${bot.bot_id}')">⏹TG</button>`
                                : ''}`
-                        : `<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); startBot('${bot.bot_id}')">▶ Запустить</button>`
+                        : `<button class="btn btn-success btn-sm" onclick="event.stopPropagation(); startBot('${bot.bot_id}')">▶ Запустить</button>
+                           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openFiles('${bot.bot_id}', '${escapeHtml(bot.name)}')">📁</button>`
                     }
                 </div>
             </div>
@@ -756,4 +759,235 @@ async function testSearch() {
             </div>
         `).join('');
     } catch (e) {}
+}
+
+// ====================================================
+// ТЕРМИНАЛ — чат с ботом в панели
+// ====================================================
+
+let terminalBotId = null;
+let terminalUserId = Date.now(); // уникальный user_id для сессии
+
+function openTerminal(botId, botName) {
+    terminalBotId = botId;
+    document.getElementById('terminalTitle').textContent = `🖥️ ${botName}`;
+    document.getElementById('terminalMessages').innerHTML = `
+        <div style="color:#3fb950; margin-bottom:12px;">
+            ✨ Чат с ${escapeHtml(botName)} открыт
+            <br><span style="color:#555;">Введите сообщение ниже</span>
+        </div>`;
+    document.getElementById('terminalInput').value = '';
+    openModal('terminalModal');
+    document.getElementById('terminalInput').focus();
+}
+
+async function terminalSend() {
+    const input = document.getElementById('terminalInput');
+    const msg = input.value.trim();
+    if (!msg || !terminalBotId) return;
+
+    input.value = '';
+    const container = document.getElementById('terminalMessages');
+
+    // добавляем сообщение юзера
+    container.innerHTML += `<div style="color:#646cff; margin:8px 0;">▸ ${escapeHtml(msg)}</div>`;
+
+    // индикатор
+    const thinkId = 'think_' + Date.now();
+    container.innerHTML += `<div id="${thinkId}" style="color:#555;">⏳ Думаю...</div>`;
+    container.scrollTop = container.scrollHeight;
+
+    try {
+        const result = await api('POST', `/api/bots/${terminalBotId}/chat`, {
+            message: msg,
+            user_id: terminalUserId
+        });
+
+        // удаляем индикатор
+        const thinkEl = document.getElementById(thinkId);
+        if (thinkEl) thinkEl.remove();
+
+        if (result.ok || result.reply) {
+            const reply = result.reply || result.error || 'пустой ответ';
+            container.innerHTML += `<div style="color:#e0e0e0; margin:4px 0 12px; white-space:pre-wrap;">${escapeHtml(reply)}</div>`;
+        } else {
+            container.innerHTML += `<div style="color:#f85149; margin:4px 0 12px;">❌ ${escapeHtml(result.error || 'Ошибка')}</div>`;
+        }
+    } catch (e) {
+        const thinkEl = document.getElementById(thinkId);
+        if (thinkEl) thinkEl.remove();
+        container.innerHTML += `<div style="color:#f85149;">❌ ${escapeHtml(e.message)}</div>`;
+    }
+
+    container.scrollTop = container.scrollHeight;
+    input.focus();
+}
+
+function terminalClear() {
+    document.getElementById('terminalMessages').innerHTML = `
+        <div style="color:#555;">🗑️ Экран очищен</div>`;
+}
+
+
+// ====================================================
+// ФАЙЛОВЫЙ МЕНЕДЖЕР
+// ====================================================
+
+let filesBotId = null;
+let filesCurrentPath = '';
+let filesSystemMode = false;
+let filesEditingPath = '';
+
+function openFiles(botId, botName) {
+    filesBotId = botId;
+    filesCurrentPath = '';
+    filesSystemMode = false;
+    document.getElementById('filesTitle').textContent = `📁 ${botName}`;
+    openModal('filesModal');
+    filesLoad();
+}
+
+function filesToggleSystem() {
+    filesSystemMode = !filesSystemMode;
+    filesCurrentPath = '';
+    document.getElementById('filesTitle').textContent = filesSystemMode ? '🔧 Системные файлы (read-only)' : '📁 Файлы бота';
+    filesLoad();
+}
+
+async function filesLoad() {
+    const list = document.getElementById('filesList');
+    document.getElementById('filesPath').textContent = filesCurrentPath || '/';
+
+    let url;
+    if (filesSystemMode) {
+        url = `/api/system/files?path=${encodeURIComponent(filesCurrentPath)}`;
+    } else {
+        url = `/api/bots/${filesBotId}/files?path=${encodeURIComponent(filesCurrentPath)}`;
+    }
+
+    const data = await apiSilent('GET', url);
+    if (!data) {
+        list.innerHTML = '<p style="color:#f85149; padding:16px;">Не удалось загрузить</p>';
+        return;
+    }
+
+    if (data.type === 'file') {
+        // открыли файл — показываем в редакторе
+        fileEditorOpen(data.name, data.content, data.readonly || filesSystemMode);
+        return;
+    }
+
+    const items = data.items || [];
+
+    if (items.length === 0) {
+        list.innerHTML = '<p style="color:#555; padding:16px; text-align:center;">📭 Пусто</p>';
+        return;
+    }
+
+    list.innerHTML = items.map(item => {
+        const icon = item.type === 'dir' ? '📁' : getFileIcon(item.ext);
+        const size = item.type === 'file' ? `<span style="color:#555; font-size:11px;">${formatFileSize(item.size)}</span>` : '';
+        const clickAction = item.type === 'dir'
+            ? `filesNavigate('${escapeHtml(item.path)}')`
+            : `filesOpenFile('${escapeHtml(item.path)}')`;
+
+        return `
+            <div onclick="${clickAction}" style="
+                display:flex; justify-content:space-between; align-items:center;
+                padding:10px 16px; border-bottom:1px solid #1a1a1a;
+                cursor:pointer; transition:background 0.15s;
+            " onmouseenter="this.style.background='#1a1a2a'" onmouseleave="this.style.background='transparent'">
+                <div>
+                    <span style="margin-right:8px;">${icon}</span>
+                    <span style="color:#e0e0e0; font-size:13px;">${escapeHtml(item.name)}</span>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    ${size}
+                    ${!filesSystemMode && item.type === 'file' ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); filesDeleteFile('${escapeHtml(item.path)}', '${escapeHtml(item.name)}')">✕</button>` : ''}
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function getFileIcon(ext) {
+    const icons = {
+        '.py': '🐍', '.js': '📜', '.json': '📋', '.html': '🌐', '.css': '🎨',
+        '.md': '📝', '.txt': '📄', '.csv': '📊', '.log': '📃', '.db': '💾',
+        '.yml': '⚙️', '.yaml': '⚙️', '.sh': '🔧', '.bat': '🔧',
+    };
+    return icons[ext] || '📄';
+}
+
+function filesNavigate(path) {
+    filesCurrentPath = path;
+    filesLoad();
+}
+
+function filesGoUp() {
+    if (!filesCurrentPath) return;
+    const parts = filesCurrentPath.split('/');
+    parts.pop();
+    filesCurrentPath = parts.join('/');
+    filesLoad();
+}
+
+async function filesOpenFile(path) {
+    let url;
+    if (filesSystemMode) {
+        url = `/api/system/files?path=${encodeURIComponent(path)}`;
+    } else {
+        url = `/api/bots/${filesBotId}/files?path=${encodeURIComponent(path)}`;
+    }
+
+    const data = await apiSilent('GET', url);
+    if (!data || data.type === 'binary') {
+        toast('Бинарный файл — нельзя открыть', 'info');
+        return;
+    }
+
+    filesEditingPath = path;
+    fileEditorOpen(data.name, data.content, data.readonly || filesSystemMode);
+}
+
+function fileEditorOpen(name, content, readonly) {
+    document.getElementById('fileEditor').style.display = 'block';
+    document.getElementById('fileEditorName').textContent = readonly ? `${name} (только чтение)` : name;
+    document.getElementById('fileEditorContent').value = content;
+    document.getElementById('fileEditorContent').readOnly = readonly;
+    document.getElementById('fileEditorSaveBtn').style.display = readonly ? 'none' : 'inline-flex';
+}
+
+function fileEditorClose() {
+    document.getElementById('fileEditor').style.display = 'none';
+    filesEditingPath = '';
+}
+
+async function fileEditorSave() {
+    if (!filesEditingPath || !filesBotId) return;
+    const content = document.getElementById('fileEditorContent').value;
+
+    try {
+        await api('PUT', `/api/bots/${filesBotId}/files`, {
+            path: filesEditingPath,
+            content: content
+        });
+        toast('Файл сохранён ✅', 'success');
+    } catch (e) {}
+}
+
+async function filesDeleteFile(path, name) {
+    if (!confirm(`Удалить ${name}?`)) return;
+    try {
+        await api('DELETE', `/api/bots/${filesBotId}/files`, { path });
+        toast(`${name} удалён`, 'info');
+        filesLoad();
+    } catch (e) {}
+}
+
+function filesNewFile() {
+    const name = prompt('Имя файла (например: notes.txt):');
+    if (!name) return;
+    const path = filesCurrentPath ? `${filesCurrentPath}/${name}` : name;
+    filesEditingPath = path;
+    fileEditorOpen(name, '', false);
 }
