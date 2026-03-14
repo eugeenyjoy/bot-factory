@@ -493,6 +493,261 @@ body {
 .tool-row { margin-bottom: 10px; padding: 4px 0; }
 
 /* ============================
+   КАСТОМНЫЕ СКРОЛЛБАРЫ
+   ============================ */
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* Firefox */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #333 transparent;
+}
+
+/* скроллбар в чате чуть заметнее */
+.chat-messages::-webkit-scrollbar-thumb {
+    background: #2a2a2a;
+}
+.chat-messages::-webkit-scrollbar-thumb:hover {
+    background: #444;
+}
+
+/* ============================
+   ПАНЕЛЬ ЗНАНИЙ И ПРОМПТОВ В ЧАТЕ
+   ============================ */
+
+.chat-panel {
+    display: none;
+    border-top: 1px solid #222;
+    background: #111;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.chat-panel.active {
+    display: block;
+}
+
+.chat-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid #1a1a1a;
+    position: sticky;
+    top: 0;
+    background: #111;
+    z-index: 1;
+}
+
+.chat-panel-header h3 {
+    font-size: 14px;
+    color: #fff;
+}
+
+.chat-panel-body {
+    padding: 12px 16px;
+}
+
+.chat-panel-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 8px 10px;
+    background: #1a1a1a;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    gap: 8px;
+}
+
+.chat-panel-item-text {
+    flex: 1;
+    font-size: 13px;
+    color: #ccc;
+    word-break: break-word;
+    line-height: 1.4;
+}
+
+.chat-panel-item-delete {
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.chat-panel-item-delete:hover {
+    color: #f85149;
+    background: #1f0d0d;
+}
+
+.chat-panel-empty {
+    color: #555;
+    font-size: 13px;
+    text-align: center;
+    padding: 16px;
+}
+
+.chat-panel-input {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.chat-panel-input input,
+.chat-panel-input textarea {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #333;
+    background: #0f0f0f;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: inherit;
+    resize: none;
+}
+
+.chat-panel-input input:focus,
+.chat-panel-input textarea:focus {
+    outline: none;
+    border-color: #646cff;
+}
+
+.chat-panel-input button {
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: none;
+    background: #646cff;
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.chat-panel-input button:hover {
+    background: #535bf2;
+}
+
+/* кнопки тулбара чата */
+.chat-toolbar {
+    display: flex;
+    gap: 4px;
+    padding: 0 16px 0 16px;
+    background: #111;
+    border-top: 1px solid #1a1a1a;
+    flex-shrink: 0;
+    overflow-x: auto;
+}
+
+.chat-toolbar button {
+    padding: 6px 10px;
+    background: none;
+    border: none;
+    color: #555;
+    font-size: 12px;
+    cursor: pointer;
+    border-top: 2px solid transparent;
+    white-space: nowrap;
+    transition: all 0.15s;
+}
+
+.chat-toolbar button:hover {
+    color: #e0e0e0;
+}
+
+.chat-toolbar button.active {
+    color: #646cff;
+    border-top-color: #646cff;
+}
+
+/* ============================
+   ЗАГРУЗКА ЗНАНИЙ В ЧАТЕ
+   ============================ */
+
+.knowledge-drop-zone {
+    border: 2px dashed #333;
+    border-radius: 10px;
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-top: 10px;
+}
+
+.knowledge-drop-zone:hover,
+.knowledge-drop-zone.dragover {
+    border-color: #646cff;
+    background: rgba(100, 108, 255, 0.05);
+}
+
+.knowledge-drop-icon {
+    font-size: 28px;
+    margin-bottom: 6px;
+}
+
+.knowledge-drop-text {
+    color: #999;
+    font-size: 13px;
+}
+
+.knowledge-drop-hint {
+    color: #555;
+    font-size: 11px;
+    margin-top: 4px;
+}
+
+.knowledge-upload-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #1a1a1a;
+    border-radius: 8px;
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+
+.knowledge-upload-item .name {
+    flex: 1;
+    color: #ccc;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.knowledge-upload-item .status {
+    flex-shrink: 0;
+    font-size: 12px;
+}
+
+.knowledge-upload-item .status.ok { color: #3fb950; }
+.knowledge-upload-item .status.err { color: #f85149; }
+.knowledge-upload-item .status.loading { color: #d29922; }
+
+/* ============================
    АДАПТИВНОСТЬ
    ============================ */
 

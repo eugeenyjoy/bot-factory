@@ -1,380 +1,382 @@
 """
-RAG — Retrieval Augmented Generation
-База знаний для каждого бота
-Загружает документы → нарезает на чанки → индексирует → ищет релевантные
+RAG — база знаний бота
+Разбивает тексты на чанки по смыслу (абзацы, предложения)
+Поиск через TF-IDF (без внешних зависимостей)
 """
 
-import os
+import re
 import json
+import math
 import logging
-import numpy as np
 from pathlib import Path
-from typing import List, Optional
+from collections import Counter
 
 logger = logging.getLogger("rag")
 
-# ленивая загрузка тяжёлых библиотек
-_embedder = None
-_faiss = None
-
-
-def get_embedder():
-    """Загружает модель эмбеддингов (один раз)"""
-    global _embedder
-    if _embedder is None:
-        logger.info("📦 Loading embedding model...")
-        from sentence_transformers import SentenceTransformer
-        _embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        logger.info("✅ Embedding model loaded")
-    return _embedder
-
-
-def get_faiss():
-    """Импортирует faiss (один раз)"""
-    global _faiss
-    if _faiss is None:
-        import faiss
-        _faiss = faiss
-    return _faiss
+BOTS_DIR = Path(__file__).parent.parent / "bots"
 
 
 class RAG:
-    """База знаний одного бота"""
 
-    def __init__(self, bot_id: str):
+    def __init__(self, bot_id: str, chunk_size: int = 800,
+                 chunk_overlap: int = 100, min_chunk_size: int = 50):
         self.bot_id = bot_id
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.min_chunk_size = min_chunk_size
 
-        # папки
-        base = Path(__file__).parent.parent / "bots" / f"bot_{bot_id}"
-        self.knowledge_dir = base / "knowledge"
-        self.index_dir = base / "index"
-        self.knowledge_dir.mkdir(parents=True, exist_ok=True)
-        self.index_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = BOTS_DIR / f"bot_{bot_id}" / "knowledge"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # пути к файлам индекса
-        self.index_path = self.index_dir / "faiss.index"
-        self.chunks_path = self.index_dir / "chunks.json"
+        self.index_file = self.data_dir / "index.json"
 
-        # данные в памяти
-        self.chunks = []       # список текстовых чанков
-        self.sources = []      # источник каждого чанка
-        self.index = None      # FAISS индекс
+        # chunks: [{"text": ..., "source": ..., "index": ...}]
+        self.chunks = []
+        # idf кэш
+        self._idf_cache = {}
+        self._doc_freq = Counter()
+        self._total_docs = 0
 
-        # загружаем существующий индекс если есть
         self._load_index()
 
-    # ====================================================
-    # ЗАГРУЗКА ФАЙЛОВ
-    # ====================================================
+    # ============================
+    # ЗАГРУЗКА / СОХРАНЕНИЕ
+    # ============================
 
-    def add_file(self, filename: str, content: bytes) -> dict:
-        """
-        Добавляет файл в базу знаний
-        Сохраняет файл → парсит → нарезает на чанки → обновляет индекс
-        """
-        # сохраняем файл
-        filepath = self.knowledge_dir / filename
-        with open(filepath, 'wb') as f:
-            f.write(content)
+    def _load_index(self):
+        if self.index_file.exists():
+            try:
+                data = json.loads(self.index_file.read_text(encoding='utf-8'))
+                self.chunks = data.get("chunks", [])
+                self._rebuild_index()
+                logger.info(f"RAG {self.bot_id}: loaded {len(self.chunks)} chunks")
+            except Exception as e:
+                logger.error(f"RAG load error: {e}")
+                self.chunks = []
 
-        # парсим текст
-        text = self._extract_text(filepath)
-        if not text.strip():
-            return {"ok": False, "error": "Не удалось извлечь текст из файла"}
+    def _save_index(self):
+        data = {"chunks": self.chunks}
+        self.index_file.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding='utf-8'
+        )
 
-        # нарезаем на чанки
-        new_chunks = self._split_text(text, filename)
+    def _rebuild_index(self):
+        """Пересчитывает TF-IDF индекс"""
+        self._doc_freq = Counter()
+        self._total_docs = len(self.chunks)
 
-        # добавляем к существующим
-        self.chunks.extend(new_chunks)
-        self.sources.extend([filename] * len(new_chunks))
+        for chunk in self.chunks:
+            words = set(self._tokenize(chunk["text"]))
+            for word in words:
+                self._doc_freq[word] += 1
 
-        # перестраиваем индекс
-        self._build_index()
+        self._idf_cache = {}
+        for word, freq in self._doc_freq.items():
+            self._idf_cache[word] = math.log((self._total_docs + 1) / (freq + 1)) + 1
 
-        logger.info(f"📚 Bot {self.bot_id}: added {filename} ({len(new_chunks)} chunks)")
+    # ============================
+    # ДОБАВЛЕНИЕ
+    # ============================
 
-        return {
-            "ok": True,
-            "filename": filename,
-            "chunks": len(new_chunks),
-            "total_chunks": len(self.chunks)
-        }
+    def add_text(self, name: str, text: str) -> int:
+        """Добавляет текст, разбивает на чанки. Возвращает кол-во чанков."""
+        # удаляем старые чанки с тем же именем
+        self.chunks = [c for c in self.chunks if c.get("source") != name]
 
-    def add_text(self, name: str, text: str) -> dict:
-        """Добавляет текст напрямую (без файла)"""
-        if not text.strip():
-            return {"ok": False, "error": "Пустой текст"}
+        # разбиваем на чанки
+        new_chunks = self._smart_chunk(text, name)
 
-        # сохраняем как txt
-        filepath = self.knowledge_dir / f"{name}.txt"
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(text)
+        if not new_chunks:
+            return 0
 
-        # нарезаем
-        new_chunks = self._split_text(text, name)
-        self.chunks.extend(new_chunks)
-        self.sources.extend([name] * len(new_chunks))
+        start_idx = len(self.chunks)
+        for i, chunk_text in enumerate(new_chunks):
+            self.chunks.append({
+                "text": chunk_text,
+                "source": name,
+                "index": start_idx + i,
+            })
 
-        # перестраиваем
-        self._build_index()
-
-        return {
-            "ok": True,
-            "name": name,
-            "chunks": len(new_chunks),
-            "total_chunks": len(self.chunks)
-        }
-
-    def remove_file(self, filename: str) -> bool:
-        """Удаляет файл и его чанки из индекса"""
-        # удаляем файл
-        filepath = self.knowledge_dir / filename
-        if filepath.exists():
-            os.remove(filepath)
-
-        # удаляем чанки этого файла
-        new_chunks = []
-        new_sources = []
-        for chunk, source in zip(self.chunks, self.sources):
-            if source != filename:
-                new_chunks.append(chunk)
-                new_sources.append(source)
-
-        removed = len(self.chunks) - len(new_chunks)
-        self.chunks = new_chunks
-        self.sources = new_sources
-
-        # перестраиваем индекс
-        if self.chunks:
-            self._build_index()
-        else:
-            self.index = None
-            self._save_index()
-
-        logger.info(f"🗑️ Bot {self.bot_id}: removed {filename} ({removed} chunks)")
-        return removed > 0
-
-    def clear(self):
-        """Удаляет всю базу знаний"""
-        # удаляем файлы
-        for f in self.knowledge_dir.iterdir():
-            os.remove(f)
-
-        # очищаем
-        self.chunks = []
-        self.sources = []
-        self.index = None
+        self._rebuild_index()
         self._save_index()
 
-        logger.info(f"🗑️ Bot {self.bot_id}: knowledge base cleared")
+        logger.info(f"RAG {self.bot_id}: added '{name}' → {len(new_chunks)} chunks")
+        return len(new_chunks)
 
-    # ====================================================
+    def add_file(self, filename: str, content: bytes) -> dict:
+        """Добавляет бинарный файл (для совместимости со старым API)"""
+        try:
+            text = content.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                text = content.decode('cp1251')
+            except:
+                return {"ok": False, "error": "Не удалось прочитать файл"}
+
+        if not text.strip():
+            return {"ok": False, "error": "Файл пустой"}
+
+        chunks = self.add_text(filename, text)
+        return {"ok": True, "chunks": chunks, "filename": filename}
+
+    # ============================
+    # УМНЫЙ ЧАНКИНГ
+    # ============================
+
+    def _smart_chunk(self, text: str, source: str = "") -> list:
+        """
+        Разбивает текст на чанки по смыслу:
+        1. Сначала по двойным переносам (абзацы)
+        2. Потом по предложениям если абзац слишком большой
+        3. Overlap между чанками для контекста
+        """
+        # нормализуем
+        text = text.strip()
+        text = re.sub(r'\r\n', '\n', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+
+        # если текст короткий — один чанк
+        if len(text) <= self.chunk_size:
+            return [text] if len(text) >= self.min_chunk_size else [text] if text.strip() else []
+
+        # разбиваем по абзацам
+        paragraphs = re.split(r'\n\n+', text)
+
+        chunks = []
+        current = ""
+
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+
+            # если абзац сам по себе огромный — разбиваем по предложениям
+            if len(para) > self.chunk_size:
+                # если накопилось — сохраняем
+                if current.strip():
+                    chunks.append(current.strip())
+                    current = ""
+
+                # разбиваем абзац по предложениям
+                sentences = self._split_sentences(para)
+                sent_chunk = ""
+
+                for sent in sentences:
+                    if len(sent_chunk) + len(sent) + 1 <= self.chunk_size:
+                        sent_chunk = (sent_chunk + " " + sent).strip()
+                    else:
+                        if sent_chunk:
+                            chunks.append(sent_chunk)
+                        # если одно предложение больше chunk_size — разрезаем
+                        if len(sent) > self.chunk_size:
+                            for i in range(0, len(sent), self.chunk_size - self.chunk_overlap):
+                                piece = sent[i:i + self.chunk_size]
+                                if piece.strip():
+                                    chunks.append(piece.strip())
+                            sent_chunk = ""
+                        else:
+                            sent_chunk = sent
+
+                if sent_chunk.strip():
+                    chunks.append(sent_chunk.strip())
+                continue
+
+            # обычный абзац — накапливаем
+            if len(current) + len(para) + 2 <= self.chunk_size:
+                current = (current + "\n\n" + para).strip()
+            else:
+                if current.strip():
+                    chunks.append(current.strip())
+                current = para
+
+        if current.strip():
+            chunks.append(current.strip())
+
+        # добавляем overlap
+        if self.chunk_overlap > 0 and len(chunks) > 1:
+            chunks = self._add_overlap(chunks)
+
+        # фильтруем слишком маленькие
+        chunks = [c for c in chunks if len(c) >= self.min_chunk_size]
+
+        return chunks
+
+    def _split_sentences(self, text: str) -> list:
+        """Разбивает текст на предложения"""
+        # разделители: . ! ? а также \n
+        parts = re.split(r'(?<=[.!?])\s+|\n', text)
+        return [p.strip() for p in parts if p.strip()]
+
+    def _add_overlap(self, chunks: list) -> list:
+        """Добавляет overlap — конец предыдущего чанка в начало следующего"""
+        result = [chunks[0]]
+
+        for i in range(1, len(chunks)):
+            prev = chunks[i - 1]
+            curr = chunks[i]
+
+            # берём последние N символов предыдущего чанка
+            overlap_text = prev[-self.chunk_overlap:]
+
+            # находим начало слова
+            space_idx = overlap_text.find(' ')
+            if space_idx > 0:
+                overlap_text = overlap_text[space_idx + 1:]
+
+            combined = f"...{overlap_text}\n\n{curr}"
+            result.append(combined)
+
+        return result
+
+    # ============================
     # ПОИСК
-    # ====================================================
+    # ============================
 
-    def search(self, query: str, top_k: int = 3) -> List[dict]:
-        """
-        Ищет релевантные чанки по запросу
-        Возвращает список: [{text, source, score}]
-        """
-        if not self.chunks or self.index is None:
+    def search(self, query: str, top_k: int = 3) -> list:
+        """Поиск по TF-IDF + keyword matching"""
+        if not self.chunks:
             return []
 
-        # эмбеддинг запроса
-        embedder = get_embedder()
-        query_vec = embedder.encode([query])
-        query_vec = np.array(query_vec, dtype='float32')
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return []
 
-        # поиск в FAISS
-        faiss = get_faiss()
-        k = min(top_k, len(self.chunks))
-        scores, indices = self.index.search(query_vec, k)
+        query_tf = Counter(query_tokens)
+        scores = []
+
+        for i, chunk in enumerate(self.chunks):
+            score = self._score_chunk(chunk["text"], query_tokens, query_tf)
+            if score > 0:
+                scores.append((i, score))
+
+        # сортируем по score
+        scores.sort(key=lambda x: x[1], reverse=True)
 
         results = []
-        for i, idx in enumerate(indices[0]):
-            if idx < 0 or idx >= len(self.chunks):
-                continue
+        for idx, score in scores[:top_k]:
+            chunk = self.chunks[idx]
             results.append({
-                "text": self.chunks[idx],
-                "source": self.sources[idx],
-                "score": float(scores[0][i])
+                "text": chunk["text"],
+                "source": chunk["source"],
+                "score": round(score, 4),
+                "index": idx,
             })
 
         return results
 
     def get_context(self, query: str, top_k: int = 3) -> str:
-        """
-        Возвращает контекст для промпта из базы знаний
-        """
+        """Возвращает контекст для системного промпта"""
         results = self.search(query, top_k)
         if not results:
             return ""
 
-        context_parts = []
+        parts = []
         for r in results:
-            context_parts.append(f"[{r['source']}]\n{r['text']}")
+            source = r["source"]
+            text = r["text"]
+            parts.append(f"[Источник: {source}]\n{text}")
 
-        return "\n\n---\n\n".join(context_parts)
+        return "\n\n---\n\n".join(parts)
 
-    # ====================================================
-    # ИНФОРМАЦИЯ
-    # ====================================================
+    def _score_chunk(self, text: str, query_tokens: list, query_tf: Counter) -> float:
+        """Считает TF-IDF score для чанка"""
+        doc_tokens = self._tokenize(text)
+        if not doc_tokens:
+            return 0.0
 
-    def get_info(self) -> dict:
-        """Информация о базе знаний"""
-        files = []
-        if self.knowledge_dir.exists():
-            for f in sorted(self.knowledge_dir.iterdir()):
-                files.append({
-                    "name": f.name,
-                    "size": f.stat().st_size,
-                    "chunks": sum(1 for s in self.sources if s == f.name)
-                })
+        doc_tf = Counter(doc_tokens)
+        doc_len = len(doc_tokens)
 
-        return {
-            "total_files": len(files),
-            "total_chunks": len(self.chunks),
-            "files": files,
-            "has_index": self.index is not None
-        }
+        score = 0.0
+        for token in query_tokens:
+            if token in doc_tf:
+                tf = doc_tf[token] / doc_len
+                idf = self._idf_cache.get(token, 1.0)
+                score += tf * idf * query_tf[token]
 
-    # ====================================================
-    # ВНУТРЕННИЕ МЕТОДЫ
-    # ====================================================
+        # бонус за точное вхождение фразы
+        text_lower = text.lower()
+        query_lower = " ".join(query_tokens)
+        if query_lower in text_lower:
+            score *= 2.0
 
-    def _extract_text(self, filepath: Path) -> str:
-        """Извлекает текст из файла"""
-        ext = filepath.suffix.lower()
+        # бонус за наличие всех слов запроса
+        if all(t in doc_tf for t in set(query_tokens)):
+            score *= 1.5
 
-        if ext in ('.txt', '.md', '.csv', '.log', '.json', '.html', '.xml'):
-            return filepath.read_text(encoding='utf-8', errors='ignore')
+        return score
 
-        elif ext == '.pdf':
-            return self._extract_pdf(filepath)
+    # ============================
+    # ТОКЕНИЗАЦИЯ
+    # ============================
 
-        else:
-            # пробуем как текст
-            try:
-                return filepath.read_text(encoding='utf-8', errors='ignore')
-            except:
-                return ""
+    def _tokenize(self, text: str) -> list:
+        """Простая токенизация: lowercase, убираем пунктуацию, стоп-слова"""
+        text = text.lower()
+        # оставляем буквы, цифры, кириллицу
+        tokens = re.findall(r'[a-zA-Zа-яА-ЯёЁ0-9]+', text)
+        # убираем стоп-слова
+        tokens = [t for t in tokens if len(t) > 2 and t not in STOP_WORDS]
+        return tokens
 
-    def _extract_pdf(self, filepath: Path) -> str:
-        """Извлекает текст из PDF"""
-        try:
-            from PyPDF2 import PdfReader
-            reader = PdfReader(str(filepath))
-            text = ""
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-            return text
-        except Exception as e:
-            logger.error(f"PDF extraction failed: {e}")
-            return ""
+    # ============================
+    # УПРАВЛЕНИЕ
+    # ============================
 
-    def _split_text(self, text: str, source: str, chunk_size: int = 500, overlap: int = 50) -> list:
-        """Нарезает текст на чанки с перекрытием"""
-        # разбиваем по абзацам
-        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
-
-        chunks = []
-        current_chunk = ""
-
-        for para in paragraphs:
-            # если абзац сам по себе больше chunk_size — разбиваем его
-            if len(para) > chunk_size:
-                # сохраняем текущий чанк
-                if current_chunk:
-                    chunks.append(current_chunk)
-                    current_chunk = ""
-
-                # разбиваем длинный абзац
-                words = para.split()
-                temp = ""
-                for word in words:
-                    if len(temp) + len(word) + 1 > chunk_size:
-                        chunks.append(temp.strip())
-                        # перекрытие — берём последние N символов
-                        temp = temp[-overlap:] + " " + word if overlap else word
-                    else:
-                        temp = temp + " " + word if temp else word
-                if temp:
-                    chunks.append(temp.strip())
-
-            # если добавление абзаца превысит лимит
-            elif len(current_chunk) + len(para) + 1 > chunk_size:
-                chunks.append(current_chunk)
-                # перекрытие
-                current_chunk = current_chunk[-overlap:] + "\n" + para if overlap else para
-            else:
-                current_chunk = current_chunk + "\n" + para if current_chunk else para
-
-        # последний чанк
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        return chunks
-
-    def _build_index(self):
-        """Строит FAISS индекс из чанков"""
-        if not self.chunks:
-            self.index = None
-            self._save_index()
-            return
-
-        # получаем эмбеддинги
-        embedder = get_embedder()
-        vectors = embedder.encode(self.chunks)
-        vectors = np.array(vectors, dtype='float32')
-
-        # строим индекс
-        faiss = get_faiss()
-        dimension = vectors.shape[1]
-        self.index = faiss.IndexFlatL2(dimension)
-        self.index.add(vectors)
-
-        # сохраняем
+    def remove_file(self, name: str):
+        self.chunks = [c for c in self.chunks if c.get("source") != name]
+        self._rebuild_index()
         self._save_index()
 
-    def _save_index(self):
-        """Сохраняет индекс и чанки на диск"""
-        # сохраняем чанки
-        data = {
-            "chunks": self.chunks,
-            "sources": self.sources
+    def clear(self):
+        self.chunks = []
+        self._rebuild_index()
+        self._save_index()
+
+    def get_info(self) -> dict:
+        sources = {}
+        for chunk in self.chunks:
+            src = chunk.get("source", "unknown")
+            if src not in sources:
+                sources[src] = {"name": src, "chunks": 0, "size": 0}
+            sources[src]["chunks"] += 1
+            sources[src]["size"] += len(chunk["text"])
+
+        # разделяем по источнику
+        admin_files = []
+        user_files = []
+        for info in sources.values():
+            if info["name"].startswith("👤"):
+                user_files.append(info)
+            else:
+                admin_files.append(info)
+
+        return {
+            "total_files": len(sources),
+            "total_chunks": len(self.chunks),
+            "files": list(sources.values()),
+            "admin_files": admin_files,
+            "user_files": user_files,
         }
-        with open(self.chunks_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
 
-        # сохраняем FAISS индекс
-        if self.index is not None:
-            faiss = get_faiss()
-            faiss.write_index(self.index, str(self.index_path))
-        else:
-            if self.index_path.exists():
-                os.remove(self.index_path)
 
-    def _load_index(self):
-        """Загружает индекс и чанки с диска"""
-        # загружаем чанки
-        if self.chunks_path.exists():
-            try:
-                with open(self.chunks_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                self.chunks = data.get("chunks", [])
-                self.sources = data.get("sources", [])
-            except:
-                self.chunks = []
-                self.sources = []
-
-        # загружаем FAISS индекс
-        if self.index_path.exists() and self.chunks:
-            try:
-                faiss = get_faiss()
-                self.index = faiss.read_index(str(self.index_path))
-                logger.info(f"📚 Bot {self.bot_id}: loaded {len(self.chunks)} chunks")
-            except:
-                self.index = None
+# стоп-слова
+STOP_WORDS = {
+    # русские
+    'это', 'как', 'так', 'что', 'для', 'все', 'его', 'она', 'они', 'мне',
+    'мой', 'ваш', 'наш', 'его', 'еще', 'уже', 'или', 'при', 'без', 'над',
+    'под', 'про', 'между', 'через', 'после', 'перед', 'вот', 'тут', 'там',
+    'где', 'когда', 'если', 'чтобы', 'потому', 'поэтому', 'такой', 'этот',
+    'тот', 'самый', 'весь', 'каждый', 'другой', 'быть', 'было', 'будет',
+    'есть', 'нет', 'можно', 'нужно', 'надо', 'очень', 'только', 'также',
+    'тоже', 'более', 'менее', 'всего', 'всех', 'ещё', 'бы', 'же', 'ли',
+    'не', 'ни', 'ну', 'да', 'нет',
+    # английские
+    'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had',
+    'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'from',
+    'this', 'that', 'with', 'they', 'been', 'have', 'many', 'some', 'them',
+    'than', 'its', 'over', 'such', 'into', 'other', 'which', 'their',
+    'there', 'about', 'would', 'make', 'like', 'just', 'could', 'also',
+    'after', 'know', 'being', 'will', 'what', 'when', 'who', 'how',
+}

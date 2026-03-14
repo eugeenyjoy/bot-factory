@@ -269,13 +269,19 @@ async function openEditModal(botId) {
         }
 
         // инструменты
+                // инструменты
         document.getElementById('editToolsEnabled').checked = config.tools_enabled !== false;
         document.getElementById('editAccessMode').value = config.access_mode || 'sandbox';
         document.getElementById('editWorkingDirectory').value = config.working_directory || '';
         document.getElementById('editMaxToolRounds').value = config.max_tool_rounds || 15;
         const perms = config.tool_permissions || {};
-        const permDefaults = {execute_commands:true, write_files:true, delete_files:false, network:false, install_packages:false};
-        ['execute_commands','write_files','delete_files','network','install_packages'].forEach(p => {
+        const permDefaults = {
+            execute_commands:true, write_files:true, delete_files:false,
+            network:false, install_packages:false,
+            user_can_clear_history:true, user_can_add_prompt:false, user_can_add_knowledge:false
+        };
+        ['execute_commands','write_files','delete_files','network','install_packages',
+         'user_can_clear_history','user_can_add_prompt','user_can_add_knowledge'].forEach(p => {
             const el = document.getElementById(`perm_${p}`);
             if (el) el.checked = perms[p] !== undefined ? perms[p] : (permDefaults[p] || false);
         });
@@ -324,6 +330,9 @@ async function saveBot() {
             delete_files: document.getElementById('perm_delete_files').checked,
             network: document.getElementById('perm_network').checked,
             install_packages: document.getElementById('perm_install_packages').checked,
+            user_can_clear_history: document.getElementById('perm_user_can_clear_history').checked,
+            user_can_add_prompt: document.getElementById('perm_user_can_add_prompt').checked,
+            user_can_add_knowledge: document.getElementById('perm_user_can_add_knowledge').checked,
         },
     };
 
@@ -657,19 +666,37 @@ function renderKnowledge(data) {
         </div>`;
         return;
     }
-    list.innerHTML = `
+
+    const adminFiles = data.admin_files || [];
+    const userFiles = data.user_files || [];
+
+    let html = `
         <div style="margin-bottom:8px; color:#8b8b8b; font-size:12px;">
             📊 ${data.total_files} файлов, ${data.total_chunks} чанков
-        </div>
-        ${data.files.map(f => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#1a1a1a; border-radius:8px; margin-bottom:4px;">
-                <div>
-                    <span style="color:#e0e0e0; font-size:13px;">📄 ${escapeHtml(f.name)}</span>
-                    <span style="color:#555; font-size:11px; margin-left:8px;">${formatFileSize(f.size)} · ${f.chunks} чанков</span>
-                </div>
-                <button class="btn btn-danger btn-sm" onclick="deleteKnowledgeFile('${escapeHtml(f.name)}')">✕</button>
+        </div>`;
+
+    if (adminFiles.length > 0) {
+        html += `<div style="color:#646cff; font-size:12px; margin:10px 0 6px;">📋 Загружено из панели (${adminFiles.length})</div>`;
+        html += adminFiles.map(f => knowledgeFileRow(f)).join('');
+    }
+
+    if (userFiles.length > 0) {
+        html += `<div style="color:#d29922; font-size:12px; margin:10px 0 6px;">👤 Загружено пользователями (${userFiles.length})</div>`;
+        html += userFiles.map(f => knowledgeFileRow(f)).join('');
+    }
+
+    list.innerHTML = html;
+}
+
+function knowledgeFileRow(f) {
+    return `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#1a1a1a; border-radius:8px; margin-bottom:4px;">
+            <div>
+                <span style="color:#e0e0e0; font-size:13px;">${escapeHtml(f.name)}</span>
+                <span style="color:#555; font-size:11px; margin-left:8px;">${formatFileSize(f.size)} · ${f.chunks} чанков</span>
             </div>
-        `).join('')}`;
+            <button class="btn btn-danger btn-sm" onclick="deleteKnowledgeFile('${escapeHtml(f.name)}')">✕</button>
+        </div>`;
 }
 
 function formatFileSize(bytes) {

@@ -110,6 +110,10 @@ DEFAULT_CONFIG = {
         "delete_files": False,
         "network": False,
         "install_packages": False,
+        # пользовательские права
+        "user_can_add_prompt": False,    # юзер может добавлять системный промпт
+        "user_can_add_knowledge": False, # юзер может загружать знания
+        "user_can_clear_history": True,  # юзер может очищать свою историю
     },
     "access_mode": "sandbox",       # sandbox | full | project | custom
     "working_directory": "",         # кастомная рабочая папка (для full/custom)

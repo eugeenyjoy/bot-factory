@@ -336,24 +336,94 @@ def api_get_knowledge(bot_id: str):
 class UploadFileRequest(BaseModel):
     filename: str
     content_base64: str
+    source: Optional[str] = "admin"  # "admin" или "user"
 
 
 @app.post("/api/bots/{bot_id}/knowledge/file")
 def api_upload_file(bot_id: str, req: UploadFileRequest):
+    """Единый эндпоинт загрузки файлов — панель и чат"""
     import base64
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
+
+    # проверяем права для юзеров
+    if req.source == "user":
+        perms = brain.permissions
+        if not perms.get("user_can_add_knowledge", False):
+            return {"ok": False, "error": "Загрузка знаний отключена администратором"}
+
     try:
-        content = base64.b64decode(req.content_base64)
+        raw = base64.b64decode(req.content_base64)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64")
-    return brain.rag.add_file(req.filename, content)
+        return {"ok": False, "error": "Ошибка декодирования"}
+
+    filename = req.filename
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'txt'
+    text = ""
+
+    # текстовые форматы
+    text_exts = {'txt', 'md', 'csv', 'json', 'html', 'xml', 'yml', 'yaml',
+                 'py', 'js', 'ts', 'css', 'log', 'ini', 'cfg', 'toml',
+                 'c', 'cpp', 'h', 'java', 'go', 'rs', 'rb', 'php', 'sh'}
+
+    if ext in text_exts:
+        try:
+            text = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                text = raw.decode('cp1251')
+            except:
+                return {"ok": False, "error": "Не удалось прочитать файл"}
+
+    elif ext == 'pdf':
+        try:
+            import fitz
+            doc = fitz.open(stream=raw, filetype="pdf")
+            text = "\n".join(page.get_text() for page in doc)
+            doc.close()
+        except ImportError:
+            return {"ok": False, "error": "PDF не поддерживается (pip install PyMuPDF)"}
+        except Exception as e:
+            return {"ok": False, "error": f"Ошибка PDF: {e}"}
+
+    elif ext in ('doc', 'docx'):
+        try:
+            import docx
+            import io
+            doc = docx.Document(io.BytesIO(raw))
+            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except ImportError:
+            return {"ok": False, "error": "DOCX не поддерживается (pip install python-docx)"}
+        except Exception as e:
+            return {"ok": False, "error": f"Ошибка DOCX: {e}"}
+    else:
+        try:
+            text = raw.decode('utf-8')
+        except:
+            return {"ok": False, "error": f"Формат .{ext} не поддерживается"}
+
+    if not text.strip():
+        return {"ok": False, "error": "Файл пустой"}
+
+    # добавляем source в имя для разделения
+    source_prefix = "📋" if req.source == "admin" else "👤"
+    display_name = f"{source_prefix} {filename}"
+
+    try:
+        result = brain.rag.add_text(display_name, text)
+        if isinstance(result, dict):
+            result["source"] = req.source
+            return result
+        return {"ok": True, "filename": display_name, "chunks": result, "size": len(text), "source": req.source}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 class AddTextRequest(BaseModel):
     name: str
     text: str
+    source: Optional[str] = "admin"
 
 
 @app.post("/api/bots/{bot_id}/knowledge/text")
@@ -361,10 +431,22 @@ def api_add_text(bot_id: str, req: AddTextRequest):
     brain = engine.get_brain(bot_id)
     if not brain:
         raise HTTPException(status_code=400, detail="Bot not active")
-    return brain.rag.add_text(req.name, req.text)
+
+    if req.source == "user":
+        perms = brain.permissions
+        if not perms.get("user_can_add_knowledge", False):
+            return {"ok": False, "error": "Загрузка знаний отключена"}
+
+    source_prefix = "📋" if req.source == "admin" else "👤"
+    display_name = f"{source_prefix} {req.name}"
+
+    result = brain.rag.add_text(display_name, req.text)
+    if isinstance(result, dict):
+        return result
+    return {"ok": True, "chunks": result}
 
 
-@app.delete("/api/bots/{bot_id}/knowledge/{filename}")
+@app.delete("/api/bots/{bot_id}/knowledge/{filename:path}")
 def api_delete_knowledge_file(bot_id: str, filename: str):
     brain = engine.get_brain(bot_id)
     if not brain:
@@ -394,8 +476,7 @@ def api_search_knowledge(bot_id: str, req: SearchRequest):
         raise HTTPException(status_code=400, detail="Bot not active")
     results = brain.rag.search(req.query, req.top_k)
     return {"results": results}
-
-
+    
 # ====================================================
 # API — МОДЕЛИ И ПРОВАЙДЕРЫ
 # ====================================================

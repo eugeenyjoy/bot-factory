@@ -49,6 +49,68 @@
         <div class="chat-welcome">Привет! Напиши мне что-нибудь 👋</div>
     </div>
 
+    <!-- панель промптов -->
+    <div class="chat-panel" id="panelPrompt">
+        <div class="chat-panel-header">
+            <h3>📝 Дополнения к промпту</h3>
+            <button class="chat-panel-item-delete" onclick="toggleChatPanel('prompt')">✕</button>
+        </div>
+        <div class="chat-panel-body">
+            <div id="promptList"></div>
+            <div class="chat-panel-input">
+                <input type="text" id="promptInput" placeholder="Добавить инструкцию боту..."
+                       onkeydown="if(event.key==='Enter')addPromptGUI()">
+                <button onclick="addPromptGUI()">➕</button>
+            </div>
+        </div>
+    </div>
+
+       <!-- панель знаний -->
+    <div class="chat-panel" id="panelKnowledge">
+        <div class="chat-panel-header">
+            <h3>📚 База знаний</h3>
+            <button class="chat-panel-item-delete" onclick="toggleChatPanel('knowledge')">✕</button>
+        </div>
+        <div class="chat-panel-body">
+            <div id="knowledgeInfoPanel"></div>
+
+            <!-- загрузка файлов -->
+            <div id="knowledgeDropZone" class="knowledge-drop-zone"
+                 ondrop="handleKnowledgeDrop(event)"
+                 ondragover="event.preventDefault(); this.classList.add('dragover')"
+                 ondragleave="this.classList.remove('dragover')">
+                <div class="knowledge-drop-icon">📎</div>
+                <div class="knowledge-drop-text">Перетащите файлы или нажмите</div>
+                <div class="knowledge-drop-hint">TXT, MD, PDF, DOCX, JSON, CSV, HTML, PY...</div>
+                <input type="file" id="knowledgeFileUpload" multiple
+                       accept=".txt,.md,.pdf,.docx,.doc,.csv,.json,.html,.xml,.yml,.yaml,.py,.js,.css,.log"
+                       onchange="handleKnowledgeFiles(this.files)"
+                       style="display:none;">
+            </div>
+
+            <!-- прогресс загрузки -->
+            <div id="knowledgeUploadProgress" style="display:none;"></div>
+
+            <!-- текст вручную -->
+            <details style="margin-top:10px;">
+                <summary style="color:#646cff; cursor:pointer; font-size:13px;">📝 Или добавить текст вручную</summary>
+                <div style="margin-top:8px;">
+                    <div class="chat-panel-input" style="flex-direction:column; gap:6px;">
+                        <input type="text" id="learnTitleInput" placeholder="Название (необязательно)">
+                        <textarea id="learnTextInput" rows="3" placeholder="Текст для добавления в базу знаний..."></textarea>
+                        <button onclick="addKnowledgeGUI()" style="align-self:flex-end;">📚 Добавить</button>
+                    </div>
+                </div>
+            </details>
+        </div>
+    </div>
+
+    <!-- тулбар -->
+    <div class="chat-toolbar" id="chatToolbar">
+        <button onclick="toggleChatPanel('prompt')" id="tbPrompt" style="display:none;">📝 Промпт</button>
+        <button onclick="toggleChatPanel('knowledge')" id="tbKnowledge" style="display:none;">📚 Знания</button>
+    </div>
+
     <!-- ввод -->
     <div class="chat-input-area">
         <input type="text" id="chatInput" placeholder="Напиши сообщение..."
@@ -58,7 +120,6 @@
 
 </div>
 
-<!-- логика чата — отдельный файл -->
 <script src="/static/chat.js"></script>
 
 </body>

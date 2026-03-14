@@ -274,6 +274,30 @@
                     Установка пакетов (pip, apt, npm) 🔴
                 </label>
             </div>
+             <hr style="border-color:#222; margin:16px 0;">
+            <p style="color:#8b8b8b; font-size:13px; margin-bottom:12px;">👤 Права пользователей</p>
+
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_user_can_clear_history" checked>
+                    <span class="toggle-slider"></span>
+                    Очистка истории (/clear)
+                </label>
+            </div>
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_user_can_add_prompt">
+                    <span class="toggle-slider"></span>
+                    Дополнение промпта (/prompt) — юзер может добавить инструкции боту
+                </label>
+            </div>
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_user_can_add_knowledge">
+                    <span class="toggle-slider"></span>
+                    Загрузка знаний (/learn) — юзер может добавить информацию в базу
+                </label>
+            </div>
         </div>
 
         <!-- ТАБ: ОПАСНАЯ ЗОНА -->
