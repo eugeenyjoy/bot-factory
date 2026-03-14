@@ -489,6 +489,9 @@ body {
 .chat-welcome { padding: 10px 14px; margin: 0 16px; background: #2a2a2a; color: #e0e0e0; border-radius: 16px; border-bottom-left-radius: 4px; font-size: 14px; align-self: flex-start; }
 .memory-counter { font-size: 11px; color: #444; text-align: center; padding: 4px; }
 
+/* инструменты */
+.tool-row { margin-bottom: 10px; padding: 4px 0; }
+
 /* ============================
    АДАПТИВНОСТЬ
    ============================ */

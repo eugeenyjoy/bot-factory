@@ -95,6 +95,7 @@
         <!-- табы -->
         <div class="tabs" id="editTabs">
             <button class="tab active" data-tab="settings" onclick="switchTab('settings')">⚙️ Настройки</button>
+            <button class="tab" data-tab="tools" onclick="switchTab('tools')">🔧 Инструменты</button>
             <button class="tab" data-tab="monetization" onclick="switchTab('monetization')">💰 Монетизация</button>
             <button class="tab" data-tab="users" onclick="switchTab('users')">👥 Юзеры</button>
             <button class="tab" data-tab="stats" onclick="switchTab('stats')">📊 Стата</button>
@@ -198,6 +199,80 @@
         <div class="tab-content" id="tab-payments">
             <div id="paymentsTable">
                 <p style="color:#8b8b8b;">Запустите бота чтобы увидеть платежи</p>
+            </div>
+        </div>
+
+                <!-- ТАБ: ИНСТРУМЕНТЫ -->
+        <div class="tab-content" id="tab-tools">
+            <div class="form-group">
+                <label class="toggle-label" style="font-size:15px; color:#fff;">
+                    <input type="checkbox" id="editToolsEnabled" checked>
+                    <span class="toggle-slider"></span>
+                    🔧 Терминал — выполнение bash команд
+                </label>
+            </div>
+
+            <hr style="border-color:#222; margin:16px 0;">
+            <p style="color:#8b8b8b; font-size:13px; margin-bottom:12px;">🔒 Режим доступа</p>
+
+            <div class="form-group">
+                <select id="editAccessMode">
+                    <option value="sandbox">🔒 Песочница — только workspace папка бота (безопасно)</option>
+                    <option value="project">📁 Проект — папка bot-factory</option>
+                    <option value="full">🖥️ Полный доступ — весь ПК (для ассистента)</option>
+                    <option value="custom">📌 Кастомный — указать папки вручную</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>📂 Рабочая директория (пусто = по умолчанию)</label>
+                <input type="text" id="editWorkingDirectory" placeholder="/home/user/projects">
+                <div class="form-hint">Папка в которой выполняются команды</div>
+            </div>
+
+            <div class="form-group">
+                <label>🔄 Макс. раундов за запрос</label>
+                <input type="number" id="editMaxToolRounds" value="15" min="1" max="50">
+                <div class="form-hint">Сколько раз модель может выполнить команды за одно сообщение (каждый раунд = вызов API)</div>
+            </div>
+
+            <hr style="border-color:#222; margin:16px 0;">
+            <p style="color:#8b8b8b; font-size:13px; margin-bottom:12px;">⚡ Права</p>
+
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_execute_commands" checked>
+                    <span class="toggle-slider"></span>
+                    Выполнение команд (ls, cat, echo, pwd, grep...)
+                </label>
+            </div>
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_write_files" checked>
+                    <span class="toggle-slider"></span>
+                    Запись файлов (>, cp, mv, mkdir, touch)
+                </label>
+            </div>
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_delete_files">
+                    <span class="toggle-slider"></span>
+                    Удаление (rm, rmdir) ⚠️
+                </label>
+            </div>
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_network">
+                    <span class="toggle-slider"></span>
+                    Сеть (curl, wget, ping) ⚠️
+                </label>
+            </div>
+            <div class="tool-row">
+                <label class="toggle-label">
+                    <input type="checkbox" id="perm_install_packages">
+                    <span class="toggle-slider"></span>
+                    Установка пакетов (pip, apt, npm) 🔴
+                </label>
             </div>
         </div>
 

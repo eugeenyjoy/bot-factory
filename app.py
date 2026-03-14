@@ -66,6 +66,10 @@ class UpdateBotRequest(BaseModel):
     enable_web_chat: Optional[bool] = None
     provider: Optional[str] = None
     custom_base_url: Optional[str] = None
+    tools_enabled: Optional[bool] = None
+    tool_permissions: Optional[dict] = None
+    allowed_paths: Optional[list] = None
+    blocked_paths: Optional[list] = None
 
 
 class VipRequest(BaseModel):
@@ -112,7 +116,10 @@ def api_get_bot(bot_id: str):
 
 @app.put("/api/bots/{bot_id}")
 def api_update_bot(bot_id: str, req: UpdateBotRequest):
-    updates = {k: v for k, v in req.dict().items() if v is not None}
+    updates = {}
+    for k, v in req.dict().items():
+        if v is not None:
+            updates[k] = v
     config = update_bot(bot_id, updates)
     if not config:
         raise HTTPException(status_code=404, detail="Bot not found")

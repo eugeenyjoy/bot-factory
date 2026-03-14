@@ -98,10 +98,24 @@ DEFAULT_CONFIG = {
     "enable_groups": False,
     "enable_web_chat": False,
     "vip_users": [],
-    # RAG настройки
+    # RAG
     "rag_chunk_size": 500,
     "rag_chunk_overlap": 50,
     "rag_top_k": 3,
+    # TOOLS — инструменты агента
+    "tools_enabled": True,
+    "tool_permissions": {
+        "execute_commands": True,
+        "write_files": True,
+        "delete_files": False,
+        "network": False,
+        "install_packages": False,
+    },
+    "access_mode": "sandbox",       # sandbox | full | project | custom
+    "working_directory": "",         # кастомная рабочая папка (для full/custom)
+    "allowed_paths": [],
+    "blocked_paths": [],
+    "max_tool_rounds": 15,
 }
 
 
@@ -468,13 +482,12 @@ def delete_bot(bot_id: str):
 
 
 def update_bot(bot_id: str, updates: dict) -> dict:
-    """Обновляет настройки бота (частично)"""
     config = load_config(bot_id)
     if not config:
         return None
 
     for key, value in updates.items():
-        if key in DEFAULT_CONFIG:
+        if key in DEFAULT_CONFIG or key in config:
             config[key] = value
 
     save_config(bot_id, config)

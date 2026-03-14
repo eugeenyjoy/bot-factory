@@ -268,6 +268,18 @@ async function openEditModal(botId) {
             document.getElementById('editModelManual').value = '';
         }
 
+        // инструменты
+        document.getElementById('editToolsEnabled').checked = config.tools_enabled !== false;
+        document.getElementById('editAccessMode').value = config.access_mode || 'sandbox';
+        document.getElementById('editWorkingDirectory').value = config.working_directory || '';
+        document.getElementById('editMaxToolRounds').value = config.max_tool_rounds || 15;
+        const perms = config.tool_permissions || {};
+        const permDefaults = {execute_commands:true, write_files:true, delete_files:false, network:false, install_packages:false};
+        ['execute_commands','write_files','delete_files','network','install_packages'].forEach(p => {
+            const el = document.getElementById(`perm_${p}`);
+            if (el) el.checked = perms[p] !== undefined ? perms[p] : (permDefaults[p] || false);
+        });
+
         switchTab('settings');
 
         // загружаем табы тихо (не показываем ошибки если бот не запущен)
@@ -302,6 +314,17 @@ async function saveBot() {
         stars_price: parseInt(document.getElementById('editStarsPrice').value) || 50,
         provider: document.getElementById('editProvider').value,
         custom_base_url: document.getElementById('editCustomUrl').value.trim(),
+        tools_enabled: document.getElementById('editToolsEnabled').checked,
+        access_mode: document.getElementById('editAccessMode').value,
+        working_directory: document.getElementById('editWorkingDirectory').value.trim(),
+        max_tool_rounds: parseInt(document.getElementById('editMaxToolRounds').value) || 15,
+        tool_permissions: {
+            execute_commands: document.getElementById('perm_execute_commands').checked,
+            write_files: document.getElementById('perm_write_files').checked,
+            delete_files: document.getElementById('perm_delete_files').checked,
+            network: document.getElementById('perm_network').checked,
+            install_packages: document.getElementById('perm_install_packages').checked,
+        },
     };
 
     try {

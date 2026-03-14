@@ -192,7 +192,7 @@ class BotInstance:
         self.config = config
         self.bot_id = config["bot_id"]
 
-        # мозг — ВСЕГДА работает (с поддержкой провайдера)
+        # мозг — ВСЕГДА работает (с инструментами)
         self.brain = Brain(
             bot_id=self.bot_id,
             api_key=config["api_key"],
@@ -203,6 +203,13 @@ class BotInstance:
             rag_top_k=config.get("rag_top_k", 3),
             provider=config.get("provider", "openrouter"),
             custom_base_url=config.get("custom_base_url", ""),
+            tools_enabled=config.get("tools_enabled", True),
+            tool_permissions=config.get("tool_permissions"),
+            allowed_paths=config.get("allowed_paths"),
+            blocked_paths=config.get("blocked_paths"),
+            access_mode=config.get("access_mode", "sandbox"),
+            working_directory=config.get("working_directory", ""),
+            max_tool_rounds=config.get("max_tool_rounds", 15),
         )
 
         # telegram — ОПЦИОНАЛЬНО
@@ -246,14 +253,21 @@ class BotInstance:
             # пересоздаём brain с новым провайдером
             self.brain = Brain(
                 bot_id=self.bot_id,
-                api_key=new_key,
+                api_key=config["api_key"],
                 model=config["model"],
                 system_prompt=config["system_prompt"],
                 max_history=config.get("max_history", 20),
                 free_messages=config.get("free_messages", 20),
                 rag_top_k=config.get("rag_top_k", 3),
-                provider=new_provider,
-                custom_base_url=new_base_url,
+                provider=config.get("provider", "openrouter"),
+                custom_base_url=config.get("custom_base_url", ""),
+                tools_enabled=config.get("tools_enabled", True),
+                tool_permissions=config.get("tool_permissions"),
+                allowed_paths=config.get("allowed_paths"),
+                blocked_paths=config.get("blocked_paths"),
+                access_mode=config.get("access_mode", "sandbox"),
+                working_directory=config.get("working_directory", ""),
+                max_tool_rounds=config.get("max_tool_rounds", 15),
             )
             logger.info(f"♻️ Bot {self.bot_id} provider changed: {old_provider} → {new_provider}")
         else:
