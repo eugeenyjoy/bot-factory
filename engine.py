@@ -1,6 +1,7 @@
 """
 Движок — управляет ботами
 Веб-чат работает всегда, Telegram подключается опционально
+Используется python-telegram-bot (не aiogram) — работает в потоках
 """
 
 import asyncio
@@ -8,191 +9,312 @@ import threading
 import logging
 from typing import Dict
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, PreCheckoutQuery, LabeledPrice
-from aiogram.filters import Command
-
 from core.brain import Brain
 from core.config import load_config, save_config, list_bots
 
-# логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("engine")
 
 
 class TelegramRunner:
-    """Telegram-часть бота (опциональная)"""
+    """Telegram polling в отдельном потоке с собственным event loop"""
 
     def __init__(self, config: dict, brain: Brain):
         self.config = config
         self.brain = brain
         self.bot_id = config["bot_id"]
+        self.token = config["bot_token"]
 
-        # aiogram бот и диспетчер
-        self.bot = Bot(token=config["bot_token"])
-        self.dp = Dispatcher()
-
-        # поток
-        self.thread = None
-        self.loop = None
+        self._thread = None
+        self._loop = None
+        self._app = None
         self.is_running = False
 
-        # хэндлеры
-        self._register_handlers()
+    def start(self):
+        if self.is_running:
+            return
 
-    def _register_handlers(self):
-        """Регистрация Telegram обработчиков"""
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-        @self.dp.message(Command("start"))
-        async def cmd_start(message: Message):
-            name = self.config["name"]
-            await message.answer(
+    def stop(self):
+        self.is_running = False
+        if self._loop and self._app:
+            try:
+                asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop)
+            except Exception:
+                pass
+
+        if self._thread:
+            self._thread.join(timeout=10)
+            self._thread = None
+
+        logger.info(f"🔴 Telegram stopped for bot {self.bot_id}")
+
+    def _run(self):
+        """Запускается в отдельном потоке"""
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._start_polling())
+        except Exception as e:
+            logger.error(f"Telegram bot {self.bot_id} crashed: {e}")
+        finally:
+            self.is_running = False
+            if self._loop and not self._loop.is_closed():
+                self._loop.close()
+            self._loop = None
+
+    async def _start_polling(self):
+        from telegram import Update
+        from telegram.ext import (
+            Application, MessageHandler, CommandHandler,
+            PreCheckoutQueryHandler, filters, ContextTypes
+        )
+
+        self._app = Application.builder().token(self.token).build()
+        brain = self.brain
+        config = self.config
+
+        # ======== ХЭНДЛЕРЫ ========
+
+        async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            name = config["name"]
+            await update.message.reply_text(
                 f"Привет! Я {name} 👋\n\n"
                 f"Просто напиши мне что угодно.\n\n"
                 f"Команды:\n"
                 f"/reset — очистить историю\n"
+                f"/help — все команды\n"
                 f"/balance — сколько сообщений осталось\n"
                 f"/buy — купить сообщения"
             )
 
-        @self.dp.message(Command("reset"))
-        async def cmd_reset(message: Message):
-            self.brain.clear_chat(message.chat.id)
-            await message.answer("🗑️ История очищена. Начнём сначала!")
+        async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            brain.clear_chat(update.effective_chat.id)
+            await update.message.reply_text("🗑️ История очищена!")
 
-        @self.dp.message(Command("balance"))
-        async def cmd_balance(message: Message):
-            remaining = self.brain.memory.get_remaining(
-                message.from_user.id,
-                self.brain.free_messages
+        async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            remaining = brain.memory.get_remaining(
+                update.effective_user.id, brain.free_messages
             )
-            user = self.brain.memory.get_or_create_user(message.from_user.id)
-
-            if user["is_vip"]:
-                await message.answer("👑 У тебя VIP — безлимит!")
+            user = brain.memory.get_or_create_user(update.effective_user.id)
+            if user.get("is_vip"):
+                await update.message.reply_text("👑 VIP — безлимит!")
             else:
-                await message.answer(
-                    f"📊 Осталось сообщений: {remaining}\n"
+                await update.message.reply_text(
+                    f"📊 Осталось: {remaining}\n"
                     f"Использовано: {user['messages_used']}\n"
                     f"Куплено: {user['messages_bought']}\n\n"
                     f"/buy — купить ещё"
                 )
 
-        @self.dp.message(Command("buy"))
-        async def cmd_buy(message: Message):
-            price = self.config["stars_price"]
-            msgs = self.config["messages_per_purchase"]
-            await message.answer_invoice(
+        async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            from telegram import LabeledPrice
+            price = config.get("stars_price", 50)
+            msgs = config.get("messages_per_purchase", 50)
+            await update.message.reply_invoice(
                 title=f"📦 {msgs} сообщений",
-                description=f"Пакет из {msgs} сообщений для {self.config['name']}",
+                description=f"Пакет из {msgs} сообщений",
                 payload=f"buy_{msgs}",
                 currency="XTR",
                 prices=[LabeledPrice(label="Сообщения", amount=price)]
             )
 
-        @self.dp.pre_checkout_query()
-        async def pre_checkout(query: PreCheckoutQuery):
-            await query.answer(ok=True)
+        async def pre_checkout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            await update.pre_checkout_query.answer(ok=True)
 
-        @self.dp.message(F.successful_payment)
-        async def on_payment(message: Message):
-            price = message.successful_payment.total_amount
-            msgs = self.config["messages_per_purchase"]
-            self.brain.add_purchased(
-                user_id=message.from_user.id,
+        async def on_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            payment = update.message.successful_payment
+            msgs = config.get("messages_per_purchase", 50)
+            brain.add_purchased(
+                user_id=update.effective_user.id,
                 messages=msgs,
-                amount=price,
+                amount=payment.total_amount,
                 source="telegram"
             )
-            remaining = self.brain.memory.get_remaining(
-                message.from_user.id,
-                self.brain.free_messages
+            remaining = brain.memory.get_remaining(
+                update.effective_user.id, brain.free_messages
             )
-            await message.answer(
-                f"✅ Оплачено! +{msgs} сообщений\n"
-                f"Баланс: {remaining} сообщений"
+            await update.message.reply_text(
+                f"✅ Оплачено! +{msgs} сообщений\nБаланс: {remaining}"
             )
 
-        @self.dp.message(F.text)
-        async def on_message(message: Message):
-            # в группе реагируем только если упомянули или ответили
-            if message.chat.type != "private":
-                if not self.config.get("enable_groups", False):
+        async def cmd_generic(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            """Обработка /help, /prompt, /learn и т.д. через brain"""
+            text = update.message.text or ""
+            result = brain.chat(
+                chat_id=update.effective_chat.id,
+                user_id=update.effective_user.id,
+                message=text,
+                user_name=update.effective_user.first_name
+            )
+            reply = result.get("reply", "...")
+            await self._send_long(update, reply)
+
+        async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text:
+                return
+
+            # группы — реагируем только на упоминание/реплай
+            if update.effective_chat.type != "private":
+                if not config.get("enable_groups", False):
                     return
-                bot_info = await self.bot.get_me()
+                bot_info = await ctx.bot.get_me()
                 bot_username = f"@{bot_info.username}"
-                is_reply_to_bot = (
-                    message.reply_to_message and
-                    message.reply_to_message.from_user and
-                    message.reply_to_message.from_user.id == bot_info.id
+                is_reply = (
+                    update.message.reply_to_message and
+                    update.message.reply_to_message.from_user and
+                    update.message.reply_to_message.from_user.id == bot_info.id
                 )
-                is_mention = bot_username.lower() in message.text.lower()
-                if not is_reply_to_bot and not is_mention:
+                is_mention = bot_username.lower() in update.message.text.lower()
+                if not is_reply and not is_mention:
                     return
 
-            result = self.brain.chat(
-                chat_id=message.chat.id,
-                user_id=message.from_user.id,
-                message=message.text,
-                user_name=message.from_user.first_name
+            await ctx.bot.send_chat_action(
+                chat_id=update.effective_chat.id, action="typing"
             )
 
-            if result["ok"]:
-                await message.answer(result["reply"])
-            elif result["error"] == "limit":
-                price = self.config["stars_price"]
-                msgs = self.config["messages_per_purchase"]
-                remaining = result.get("remaining", 0)
-                await message.answer(
-                    f"📭 Лимит сообщений исчерпан!\n\n"
-                    f"Осталось: {remaining}\n\n"
-                    f"💎 Купить {msgs} сообщений за {price} ⭐:\n"
-                    f"/buy — оплатить через Telegram Stars"
+            result = brain.chat(
+                chat_id=update.effective_chat.id,
+                user_id=update.effective_user.id,
+                message=update.message.text,
+                user_name=update.effective_user.first_name
+            )
+
+            if result.get("ok") is not False and result.get("reply"):
+                await self._send_long(update, result["reply"])
+            elif result.get("error") == "limit":
+                price = config.get("stars_price", 50)
+                msgs = config.get("messages_per_purchase", 50)
+                await update.message.reply_text(
+                    f"📭 Лимит исчерпан!\n\n"
+                    f"💎 /buy — купить {msgs} сообщений за {price} ⭐"
                 )
             else:
-                logger.error(f"Bot {self.bot_id} error: {result['error']}")
-                await message.answer("⚠️ Ошибка. Попробуй ещё раз.")
+                await update.message.reply_text(
+                    f"⚠️ Ошибка: {result.get('error', 'unknown')}"
+                )
 
-    def start(self):
-        """Запускает Telegram polling в отдельном потоке"""
-        if self.is_running:
-            return
+        async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            """Загрузка файла как знания"""
+            perms = brain.permissions
+            if not perms.get("user_can_add_knowledge", False):
+                await update.message.reply_text("🚫 Загрузка файлов отключена")
+                return
 
-        def run():
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-            self.is_running = True
-            logger.info(f"🔵 Telegram started for bot {self.bot_id}")
-            try:
-                self.loop.run_until_complete(self.dp.start_polling(self.bot))
-            except Exception as e:
-                logger.error(f"Telegram bot {self.bot_id} crashed: {e}")
-            finally:
-                self.is_running = False
+            doc = update.message.document
+            if not doc:
+                return
 
-        self.thread = threading.Thread(target=run, daemon=True)
-        self.thread.start()
+            if doc.file_size > 5 * 1024 * 1024:
+                await update.message.reply_text("❌ Макс 5MB")
+                return
 
-    def stop(self):
-        """Останавливает Telegram polling"""
-        if not self.is_running:
-            return
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self.dp.stop_polling(), self.loop
+            await ctx.bot.send_chat_action(
+                chat_id=update.effective_chat.id, action="typing"
             )
-        self.is_running = False
-        logger.info(f"🔴 Telegram stopped for bot {self.bot_id}")
+
+            try:
+                file = await ctx.bot.get_file(doc.file_id)
+                data = await file.download_as_bytearray()
+
+                filename = doc.file_name or "document.txt"
+                ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'txt'
+
+                text_exts = {
+                    'txt', 'md', 'csv', 'json', 'html', 'xml', 'yml', 'yaml',
+                    'py', 'js', 'ts', 'css', 'log', 'ini', 'cfg', 'toml',
+                    'c', 'cpp', 'h', 'java', 'go', 'rs', 'rb', 'php', 'sh'
+                }
+
+                if ext in text_exts:
+                    try:
+                        text = bytes(data).decode('utf-8')
+                    except UnicodeDecodeError:
+                        text = bytes(data).decode('cp1251', errors='ignore')
+                else:
+                    await update.message.reply_text(f"❌ .{ext} не поддерживается")
+                    return
+
+                if not text.strip():
+                    await update.message.reply_text("❌ Файл пустой")
+                    return
+
+                display_name = f"👤 {filename}"
+                chunks = brain.rag.add_text(display_name, text)
+                await update.message.reply_text(
+                    f"✅ {filename} добавлен!\n📊 {chunks} чанков"
+                )
+
+            except Exception as e:
+                logger.error(f"TG file upload: {e}")
+                await update.message.reply_text(f"❌ {e}")
+
+        # ======== РЕГИСТРАЦИЯ ========
+
+        self._app.add_handler(CommandHandler("start", cmd_start))
+        self._app.add_handler(CommandHandler("reset", cmd_reset))
+        self._app.add_handler(CommandHandler("balance", cmd_balance))
+        self._app.add_handler(CommandHandler("buy", cmd_buy))
+        self._app.add_handler(PreCheckoutQueryHandler(pre_checkout))
+
+        # команды через brain
+        for cmd in ["help", "prompt", "prompt_clear", "learn", "knowledge", "stats", "clear"]:
+            self._app.add_handler(CommandHandler(cmd, cmd_generic))
+
+        self._app.add_handler(
+            MessageHandler(filters.SUCCESSFUL_PAYMENT, on_payment)
+        )
+        self._app.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, on_message)
+        )
+        self._app.add_handler(
+            MessageHandler(filters.Document.ALL, on_document)
+        )
+
+        # ======== ЗАПУСК ========
+
+        await self._app.initialize()
+        await self._app.start()
+        await self._app.updater.start_polling(drop_pending_updates=True)
+
+        self.is_running = True
+        logger.info(f"🔵 Telegram started for bot {self.bot_id}")
+
+        # ждём остановки
+        while self.is_running:
+            await asyncio.sleep(1)
+
+        await self._shutdown()
+
+    async def _shutdown(self):
+        try:
+            if self._app:
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+                if self._app.running:
+                    await self._app.stop()
+                await self._app.shutdown()
+        except Exception as e:
+            logger.error(f"TG shutdown {self.bot_id}: {e}")
+
+    async def _send_long(self, update, text: str):
+        """Отправка длинных сообщений (>4096)"""
+        if len(text) <= 4096:
+            await update.message.reply_text(text)
+        else:
+            for i in range(0, len(text), 4096):
+                await update.message.reply_text(text[i:i + 4096])
 
 
 class BotInstance:
-    """Один бот — мозг всегда работает, Telegram опционально"""
+    """Один бот — мозг + опциональный Telegram"""
 
     def __init__(self, config: dict):
         self.config = config
         self.bot_id = config["bot_id"]
 
-        # мозг — ВСЕГДА работает (с инструментами)
         self.brain = Brain(
             bot_id=self.bot_id,
             api_key=config["api_key"],
@@ -212,11 +334,9 @@ class BotInstance:
             max_tool_rounds=config.get("max_tool_rounds", 15),
         )
 
-        # telegram — ОПЦИОНАЛЬНО
         self.telegram = None
 
     def start_telegram(self) -> bool:
-        """Подключает Telegram"""
         if not self.config.get("bot_token"):
             logger.warning(f"Bot {self.bot_id}: no telegram token")
             return False
@@ -229,20 +349,17 @@ class BotInstance:
         return True
 
     def stop_telegram(self):
-        """Отключает Telegram"""
         if self.telegram:
             self.telegram.stop()
             self.telegram = None
 
     def reload_config(self, config: dict):
-        """Обновляет настройки (включая смену провайдера)"""
         old_provider = self.config.get("provider", "openrouter")
         old_key = self.config.get("api_key", "")
         old_base_url = self.config.get("custom_base_url", "")
 
         self.config = config
 
-        # если сменился провайдер/ключ/url — пересоздаём AI клиент
         new_provider = config.get("provider", "openrouter")
         new_key = config.get("api_key", "")
         new_base_url = config.get("custom_base_url", "")
@@ -250,7 +367,6 @@ class BotInstance:
         if (old_provider != new_provider or
             old_key != new_key or
             old_base_url != new_base_url):
-            # пересоздаём brain с новым провайдером
             self.brain = Brain(
                 bot_id=self.bot_id,
                 api_key=config["api_key"],
@@ -269,13 +385,16 @@ class BotInstance:
                 working_directory=config.get("working_directory", ""),
                 max_tool_rounds=config.get("max_tool_rounds", 15),
             )
-            logger.info(f"♻️ Bot {self.bot_id} provider changed: {old_provider} → {new_provider}")
+            logger.info(f"♻️ Bot {self.bot_id} provider changed")
         else:
-            # просто обновляем параметры
             self.brain.update_model(config["model"])
             self.brain.update_prompt(config["system_prompt"])
             self.brain.update_free_limit(config.get("free_messages", 20))
             self.brain.update_max_history(config.get("max_history", 20))
+
+            if config.get("tool_permissions"):
+                self.brain.update_tool_permissions(config["tool_permissions"])
+            self.brain.set_tools_enabled(config.get("tools_enabled", True))
 
         logger.info(f"♻️ Bot {self.bot_id} config reloaded")
 
@@ -287,7 +406,6 @@ class Engine:
         self.instances: Dict[str, BotInstance] = {}
 
     def activate_bot(self, bot_id: str) -> bool:
-        """Активирует бота (мозг работает, веб-чат доступен)"""
         if bot_id in self.instances:
             return True
 
@@ -306,11 +424,10 @@ class Engine:
         config["is_running"] = True
         save_config(bot_id, config)
 
-        logger.info(f"🟢 Bot {bot_id} ({config['name']}) activated — provider: {config.get('provider', 'openrouter')}")
+        logger.info(f"🟢 Bot {bot_id} ({config['name']}) activated")
         return True
 
     def deactivate_bot(self, bot_id: str) -> bool:
-        """Деактивирует бота полностью"""
         if bot_id not in self.instances:
             return False
 
@@ -326,22 +443,18 @@ class Engine:
         return True
 
     def start_telegram(self, bot_id: str) -> bool:
-        """Подключает Telegram к боту"""
         if bot_id not in self.instances:
             if not self.activate_bot(bot_id):
                 return False
-
         return self.instances[bot_id].start_telegram()
 
     def stop_telegram(self, bot_id: str) -> bool:
-        """Отключает Telegram (мозг продолжает работать)"""
         if bot_id not in self.instances:
             return False
         self.instances[bot_id].stop_telegram()
         return True
 
     def reload_bot(self, bot_id: str) -> bool:
-        """Перезагружает конфиг"""
         if bot_id not in self.instances:
             return False
         config = load_config(bot_id)
@@ -351,7 +464,6 @@ class Engine:
         return True
 
     def get_status(self, bot_id: str) -> dict:
-        """Статус бота"""
         config = load_config(bot_id)
         if not config:
             return None
@@ -377,12 +489,10 @@ class Engine:
         }
 
     def get_all_statuses(self) -> list:
-        """Статусы всех ботов"""
         bots = list_bots()
         return [self.get_status(c["bot_id"]) for c in bots if self.get_status(c["bot_id"])]
 
     def start_all(self):
-        """Автозапуск ботов при старте сервера"""
         for config in list_bots():
             if config.get("is_running", False):
                 self.activate_bot(config["bot_id"])
@@ -390,12 +500,10 @@ class Engine:
                     self.start_telegram(config["bot_id"])
 
     def stop_all(self):
-        """Останавливает всё"""
         for bot_id in list(self.instances.keys()):
             self.deactivate_bot(bot_id)
 
     def get_brain(self, bot_id: str) -> Brain:
-        """Получить мозг бота"""
         if bot_id in self.instances:
             return self.instances[bot_id].brain
         return None
