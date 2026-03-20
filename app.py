@@ -373,8 +373,9 @@ def api_upload_file(bot_id: str, req: UploadFileRequest):
         except UnicodeDecodeError:
             try:
                 text = raw.decode('cp1251')
-            except:
-                return {"ok": False, "error": "Не удалось прочитать файл"}
+            except (UnicodeDecodeError, Exception) as e:
+                logger.error(f"File decode error: {e}")
+                return {"ok": False, "error": f"Не удалось прочитать файл: {str(e)[:100]}"}
 
     elif ext == 'pdf':
         try:
@@ -396,7 +397,8 @@ def api_upload_file(bot_id: str, req: UploadFileRequest):
         except ImportError:
             return {"ok": False, "error": "DOCX не поддерживается (pip install python-docx)"}
         except Exception as e:
-            return {"ok": False, "error": f"Ошибка DOCX: {e}"}
+            logger.error(f"DOCX error: {e}")
+            return {"ok": False, "error": f"Ошибка DOCX: {str(e)[:100]}"}
     else:
         try:
             text = raw.decode('utf-8')
