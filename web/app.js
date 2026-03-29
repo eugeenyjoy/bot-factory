@@ -46,80 +46,296 @@ async function apiSilent(method, url, body = null) {
 }
 
 // ====================================================
-// МОДЕЛИ — автоматически с OpenRouter
+// МОДЕЛИ — searchable dropdown + избранное
 // ====================================================
 
-async function loadModels() {
+const CATEGORY_ORDER = [
+    { key: '_favorites', label: '⭐ Избранное' },
+    { key: 'uncensored', label: '🔥 Без цензуры' },
+    { key: 'psychology', label: '💬 Собеседник / Универсальная' },
+    { key: 'code',       label: '💻 Код / Программирование' },
+    { key: 'creative',   label: '🎭 Ролеплей / Креатив / Истории' },
+    { key: 'analytics',  label: '📊 Аналитика / Документы / RAG' },
+    { key: 'reasoning',  label: '🧮 Логика / Математика / Reasoning' },
+];
+
+let modelSearchHighlight = -1;
+let modelSearchFiltered = [];
+let modelSearchActivePrefix = null;
+let favoriteModels = new Set();
+
+// загрузка избранного из localStorage
+function loadFavorites() {
     try {
-        models = await api('GET', '/api/models');
-        fillModelSelects();
+        const saved = localStorage.getItem('bf_favorite_models');
+        if (saved) {
+            const arr = JSON.parse(saved);
+            if (Array.isArray(arr)) {
+                favoriteModels = new Set(arr);
+            }
+        }
     } catch (e) {
-        models = [{ id: 'mistralai/mistral-nemo', name: 'Mistral Nemo', category: 'psychology', rating: 6, price: '$0.03→$0.03', censored: false, prompt_price: 0.03 }];
-        fillModelSelects();
+        favoriteModels = new Set();
     }
 }
 
-function fillModelSelects() {
-    const selects = ['newModel', 'editModel'];
+function saveFavorites() {
+    try {
+        localStorage.setItem('bf_favorite_models', JSON.stringify([...favoriteModels]));
+    } catch (e) {}
+}
 
-    const categoryOrder = [
-        { key: 'uncensored', label: '🔥 Без цензуры' },
-        { key: 'psychology', label: '💬 Собеседник / Универсальная' },
-        { key: 'code', label: '💻 Код / Программирование' },
-        { key: 'creative', label: '🎭 Ролеплей / Креатив / Истории' },
-        { key: 'analytics', label: '📊 Аналитика / Документы / RAG' },
-        { key: 'reasoning', label: '🧮 Логика / Математика / Reasoning' },
-    ];
+function toggleFavorite(modelId) {
+    if (favoriteModels.has(modelId)) {
+        favoriteModels.delete(modelId);
+    } else {
+        favoriteModels.add(modelId);
+    }
+    saveFavorites();
 
-    // группируем
+    // перерисовываем dropdown
+    if (modelSearchActivePrefix) {
+        const input = document.getElementById(`${modelSearchActivePrefix}ModelSearch`);
+        const query = (input.value || '').toLowerCase().trim();
+        renderModelDropdown(modelSearchActivePrefix, query);
+
+        // возвращаем фокус на инпут
+        requestAnimationFrame(() => input.focus());
+    }
+}
+
+async function loadModels() {
+    loadFavorites();
+    try {
+        models = await api('GET', '/api/models');
+    } catch (e) {
+        models = [{
+            id: 'mistralai/mistral-nemo', name: 'Mistral Nemo',
+            category: 'psychology', rating: 6, price: '$0.03→$0.03',
+            censored: false, prompt_price: 0.03
+        }];
+    }
+    models.sort((a, b) => {
+        if ((b.rating || 0) !== (a.rating || 0)) return (b.rating || 0) - (a.rating || 0);
+        return (a.prompt_price || 0) - (b.prompt_price || 0);
+    });
+}
+
+function modelSearchOpen(prefix) {
+    modelSearchActivePrefix = prefix;
+    modelSearchHighlight = -1;
+    modelSearchFilter(prefix);
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+    dd.classList.add('open');
+}
+
+function modelSearchClose(prefix) {
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+    dd.classList.remove('open');
+    modelSearchActivePrefix = null;
+}
+
+function modelSearchFilter(prefix) {
+    const input = document.getElementById(`${prefix}ModelSearch`);
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+    const query = (input.value || '').toLowerCase().trim();
+
+    if (query.length === 0) {
+        modelSearchFiltered = [...models];
+    } else {
+        const terms = query.split(/\s+/);
+        modelSearchFiltered = models.filter(m => {
+            const haystack = `${m.id} ${m.name} ${m.category || ''} ${m.description || ''}`.toLowerCase();
+            return terms.every(t => haystack.includes(t));
+        });
+    }
+
+    modelSearchHighlight = -1;
+    renderModelDropdown(prefix, query);
+}
+
+function renderModelDropdown(prefix, query) {
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+
+    if (modelSearchFiltered.length === 0) {
+        dd.innerHTML = `<div class="model-search-empty">Ничего не найдено для «${escapeHtml(query)}»</div>`;
+        dd.classList.add('open');
+        return;
+    }
+
+    // группируем: сначала избранные, потом по категориям
     const grouped = {};
-    models.forEach(m => {
+
+    // избранные
+    const favModels = modelSearchFiltered.filter(m => favoriteModels.has(m.id));
+    if (favModels.length > 0) {
+        grouped['_favorites'] = favModels;
+    }
+
+    // остальные по категориям
+    modelSearchFiltered.forEach(m => {
         const cat = m.category || 'psychology';
         if (!grouped[cat]) grouped[cat] = [];
         grouped[cat].push(m);
     });
 
-    // сортируем внутри категории
-    Object.keys(grouped).forEach(cat => {
-        grouped[cat].sort((a, b) => {
-            if ((b.rating || 0) !== (a.rating || 0)) return (b.rating || 0) - (a.rating || 0);
-            return (a.prompt_price || 0) - (b.prompt_price || 0);
+    let html = '';
+    let globalIdx = 0;
+
+    CATEGORY_ORDER.forEach(cat => {
+        const items = grouped[cat.key];
+        if (!items || items.length === 0) return;
+
+        const isFav = cat.key === '_favorites';
+        html += `<div class="model-search-category${isFav ? ' favorites' : ''}">${cat.label} (${items.length})</div>`;
+
+        items.forEach(model => {
+            const highlighted = globalIdx === modelSearchHighlight ? ' highlighted' : '';
+            const name = highlightMatch(model.name, query);
+            const id = highlightMatch(model.id, query);
+            const censor = model.censored ? '' : '<span class="uncensored"> 🔓</span>';
+            const isFavorite = favoriteModels.has(model.id);
+            const starClass = isFavorite ? ' active' : '';
+            const starIcon = isFavorite ? '⭐' : '☆';
+
+            html += `
+                <div class="model-search-item${highlighted}"
+                     data-idx="${globalIdx}"
+                     data-model-id="${escapeAttr(model.id)}"
+                     onmouseenter="modelSearchHighlight=${globalIdx}; highlightModelItem('${prefix}')">
+                    <button class="model-search-fav-btn${starClass}"
+                            data-fav-id="${escapeAttr(model.id)}"
+                            title="${isFavorite ? 'Убрать из избранного' : 'В избранное'}">${starIcon}</button>
+                    <div class="model-search-item-content">
+                        <div class="model-search-item-name">${name}${censor}</div>
+                        <div class="model-search-item-meta">
+                            <span style="color:#888;">${id}</span>
+                            <span class="price" style="margin-left:8px;">${model.price || ''}</span>
+                        </div>
+                    </div>
+                </div>`;
+            globalIdx++;
         });
     });
 
-    selects.forEach(selectId => {
-        const select = document.getElementById(selectId);
-        if (!select) return;
+    html += `<div class="model-search-count">${modelSearchFiltered.length} из ${models.length} моделей · ⭐ ${favoriteModels.size} в избранном</div>`;
 
-        const oldValue = select.value;
-        select.innerHTML = '';
+    dd.innerHTML = html;
+    dd.classList.add('open');
+}
 
-        categoryOrder.forEach(cat => {
-            const items = grouped[cat.key];
-            if (!items || items.length === 0) return;
+function highlightMatch(text, query) {
+    if (!query || query.length < 2) return escapeHtml(text);
+    const escaped = escapeHtml(text);
+    const terms = query.split(/\s+/).filter(t => t.length >= 2);
+    let result = escaped;
+    terms.forEach(term => {
+        const regex = new RegExp(`(${escapeRegex(term)})`, 'gi');
+        result = result.replace(regex, '<mark>$1</mark>');
+    });
+    return result;
+}
 
-            const group = document.createElement('optgroup');
-            group.label = `${cat.label} (${items.length})`;
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-            items.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model.id;
+function escapeAttr(str) {
+    return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
 
-                const censor = model.censored ? '' : ' 🔓';
-                option.textContent = `${model.name} · ${model.price}${censor}`;
-                option.title = model.description || '';
+function modelSearchSelect(prefix, modelId) {
+    const model = models.find(m => m.id === modelId);
+    if (!model) return;
 
-                group.appendChild(option);
-            });
+    document.getElementById(`${prefix}ModelValue`).value = modelId;
+    document.getElementById(`${prefix}ModelSearch`).value = '';
 
-            select.appendChild(group);
-        });
+    const censor = model.censored ? '' : ' 🔓';
+    const favStar = favoriteModels.has(modelId) ? '⭐ ' : '';
+    document.getElementById(`${prefix}ModelSelected`).innerHTML =
+        `✅ ${favStar}<strong>${escapeHtml(model.name)}</strong> · ${model.price || ''}${censor}` +
+        `<br><span style="color:#888; font-size:11px;">${escapeHtml(model.id)}</span>`;
 
-        // восстанавливаем выбранное значение
-        if (oldValue) select.value = oldValue;
+    modelSearchClose(prefix);
+}
+
+function highlightModelItem(prefix) {
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+    dd.querySelectorAll('.model-search-item').forEach((el, i) => {
+        el.classList.toggle('highlighted', i === modelSearchHighlight);
     });
 }
 
+// навигация клавишами
+document.addEventListener('keydown', (e) => {
+    if (!modelSearchActivePrefix) return;
+    const prefix = modelSearchActivePrefix;
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+    if (!dd.classList.contains('open')) return;
+
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        modelSearchHighlight = Math.min(modelSearchHighlight + 1, modelSearchFiltered.length - 1);
+        highlightModelItem(prefix);
+        scrollToHighlighted(prefix);
+    } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        modelSearchHighlight = Math.max(modelSearchHighlight - 1, 0);
+        highlightModelItem(prefix);
+        scrollToHighlighted(prefix);
+    } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (modelSearchHighlight >= 0 && modelSearchHighlight < modelSearchFiltered.length) {
+            modelSearchSelect(prefix, modelSearchFiltered[modelSearchHighlight].id);
+        }
+    } else if (e.key === 'Escape') {
+        modelSearchClose(prefix);
+    }
+});
+
+function scrollToHighlighted(prefix) {
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+    const item = dd.querySelector(`.model-search-item[data-idx="${modelSearchHighlight}"]`);
+    if (item) item.scrollIntoView({ block: 'nearest' });
+}
+
+// делегированные клики по dropdown
+document.addEventListener('click', (e) => {
+    // клик по звёздочке
+    const favBtn = e.target.closest('.model-search-fav-btn');
+    if (favBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const modelId = favBtn.dataset.favId;
+        if (modelId) toggleFavorite(modelId);
+        return;
+    }
+
+    // клик по модели (выбор)
+    const item = e.target.closest('.model-search-item');
+    if (item && modelSearchActivePrefix) {
+        e.preventDefault();
+        const modelId = item.dataset.modelId;
+        if (modelId) modelSearchSelect(modelSearchActivePrefix, modelId);
+        return;
+    }
+
+    // клик снаружи — закрываем
+    ['new', 'edit'].forEach(prefix => {
+        const wrap = document.getElementById(`${prefix}ModelWrap`);
+        if (wrap && !wrap.contains(e.target)) {
+            modelSearchClose(prefix);
+        }
+    });
+});
+
+// не даём dropdown отбирать фокус у инпута
+document.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.model-search-dropdown')) {
+        e.preventDefault();
+    }
+});
 // ====================================================
 // ЗАГРУЗКА БОТОВ
 // ====================================================
@@ -208,8 +424,9 @@ async function createBot() {
     const token = document.getElementById('newToken').value.trim();
     const apiKey = document.getElementById('newApiKey').value.trim();
     const manualModel = document.getElementById('newModelManual').value.trim();
-    const selectModel = document.getElementById('newModel').value;
-    const model = manualModel || selectModel;
+    const selectedModel = document.getElementById('newModelValue').value;
+    const model = manualModel || selectedModel;
+    if (!model) return toast('Выберите модель', 'error');
     const prompt = document.getElementById('newPrompt').value.trim();
     const provider = document.getElementById('newProvider').value;
     const customUrl = document.getElementById('newCustomUrl').value.trim();
@@ -258,14 +475,20 @@ async function openEditModal(botId) {
         onProviderChange('edit');
 
         // модель из селекта
-        const modelSelect = document.getElementById('editModel');
-        modelSelect.value = config.model || '';
-
-        // если модели нет в списке — вписываем в ручное поле
-        if (modelSelect.value !== config.model) {
-            document.getElementById('editModelManual').value = config.model || '';
-        } else {
+        // устанавливаем текущую модель
+        const currentModel = config.model || '';
+        document.getElementById('editModelValue').value = currentModel;
+        const modelData = models.find(m => m.id === currentModel);
+        if (modelData) {
+            const censor = modelData.censored ? '' : ' 🔓';
+            document.getElementById('editModelSelected').innerHTML =
+                `✅ <strong>${escapeHtml(modelData.name)}</strong> · ${modelData.price || ''}${censor}` +
+                `<br><span style="color:#888; font-size:11px;">${escapeHtml(modelData.id)}</span>`;
             document.getElementById('editModelManual').value = '';
+        } else {
+            document.getElementById('editModelSelected').innerHTML =
+                `<span style="color:#f0883e;">⚠️ ${escapeHtml(currentModel)}</span>`;
+            document.getElementById('editModelManual').value = currentModel;
         }
 
         // инструменты
@@ -303,8 +526,8 @@ async function saveBot() {
     if (!currentBotId) return;
 
     const manualModel = document.getElementById('editModelManual').value.trim();
-    const selectModel = document.getElementById('editModel').value;
-    const model = manualModel || selectModel;
+    const selectedModel = document.getElementById('editModelValue').value;
+    const model = manualModel || selectedModel;
 
     const updates = {
         name: document.getElementById('editName').value.trim(),

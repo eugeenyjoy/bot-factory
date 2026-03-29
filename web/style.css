@@ -752,6 +752,248 @@ body {
 .knowledge-upload-item .status.err { color: #f85149; }
 .knowledge-upload-item .status.loading { color: #d29922; }
 
+/* ====================================================
+   SEARCHABLE MODEL DROPDOWN
+   ==================================================== */
+
+.model-search-wrap {
+    position: relative;
+}
+
+.model-search-input {
+    width: 100%;
+    padding: 10px 14px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.model-search-input:focus {
+    border-color: #646cff;
+}
+
+.model-search-selected {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #646cff;
+    min-height: 18px;
+}
+
+.model-search-selected:empty {
+    display: none;
+}
+
+.model-search-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 0 0 8px 8px;
+    max-height: 350px;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+.model-search-dropdown.open {
+    display: block;
+}
+
+.model-search-category {
+    padding: 8px 14px 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #646cff;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: #111;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    border-bottom: 1px solid #222;
+}
+
+.model-search-item {
+    padding: 8px 14px;
+    cursor: pointer;
+    transition: background 0.1s;
+    border-bottom: 1px solid #1f1f1f;
+}
+
+.model-search-item:hover,
+.model-search-item.highlighted {
+    background: #252540;
+}
+
+.model-search-item-name {
+    color: #e0e0e0;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.model-search-item-name mark {
+    background: #646cff40;
+    color: #a5a8ff;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+.model-search-item-meta {
+    color: #666;
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+.model-search-item-meta .price {
+    color: #3fb950;
+}
+
+.model-search-item-meta .uncensored {
+    color: #f0883e;
+}
+
+.model-search-empty {
+    padding: 16px;
+    text-align: center;
+    color: #555;
+    font-size: 13px;
+}
+
+.model-search-count {
+    padding: 6px 14px;
+    font-size: 11px;
+    color: #444;
+    text-align: right;
+    border-top: 1px solid #222;
+    background: #111;
+    position: sticky;
+    bottom: 0;
+}
+
+/* скроллбар dropdown */
+.model-search-dropdown::-webkit-scrollbar {
+    width: 6px;
+}
+.model-search-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+}
+.model-search-dropdown::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 3px;
+}
+
+/* ====================================================
+   ФУТЕР — STICKY
+   ==================================================== */
+
+html, body {
+    min-height: 100vh;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+}
+
+.container {
+    flex: 1;
+}
+
+.footer {
+    margin-top: auto;
+    padding: 16px 0;
+    border-top: 1px solid #1a1a1a;
+    text-align: center;
+    background: #0a0a0a;
+}
+
+.footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: #555;
+}
+
+.footer-separator {
+    color: #333;
+}
+
+.footer-link {
+    color: #646cff;
+    text-decoration: none;
+    font-weight: 600;
+    transition: color 0.2s;
+}
+
+.footer-link:hover {
+    color: #8b8fff;
+    text-decoration: underline;
+}
+
+.footer-copy {
+    color: #444;
+}
+
+/* ====================================================
+   ИЗБРАННЫЕ МОДЕЛИ
+   ==================================================== */
+
+.model-search-fav-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 4px;
+    opacity: 0.3;
+    transition: opacity 0.15s, transform 0.15s;
+    flex-shrink: 0;
+}
+
+.model-search-fav-btn:hover {
+    opacity: 0.7;
+    transform: scale(1.2);
+}
+
+.model-search-fav-btn.active {
+    opacity: 1;
+}
+
+.model-search-item {
+    padding: 8px 14px;
+    cursor: pointer;
+    transition: background 0.1s;
+    border-bottom: 1px solid #1f1f1f;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.model-search-item:hover,
+.model-search-item.highlighted {
+    background: #252540;
+}
+
+.model-search-item-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.model-search-category.favorites {
+    color: #f0883e;
+    background: #1a1508;
+    border-bottom-color: #332a10;
+}
+
 /* ============================
    АДАПТИВНОСТЬ
    ============================ */

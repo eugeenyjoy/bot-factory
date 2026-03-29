@@ -12,7 +12,7 @@
 <header class="header">
     <div class="header-left">
         <h1>🤖 Bot Factory</h1>
-        <span class="version">v2.0</span>
+        <span class="version">v2.1</span>
     </div>
     <button class="btn btn-primary" onclick="openCreateModal()">＋ Новый бот</button>
 </header>
@@ -62,7 +62,16 @@
             </div>
             <div class="form-group">
                 <label>🤖 Модель</label>
-                <select id="newModel"></select>
+                <div class="model-search-wrap" id="newModelWrap">
+                    <input type="text" id="newModelSearch" class="model-search-input"
+                           placeholder="🔍 Поиск модели... (напр. mistral, gpt, claude)"
+                           autocomplete="off"
+                           onfocus="modelSearchOpen('new')"
+                           oninput="modelSearchFilter('new')">
+                    <input type="hidden" id="newModelValue">
+                    <div class="model-search-selected" id="newModelSelected"></div>
+                    <div class="model-search-dropdown" id="newModelDropdown"></div>
+                </div>
                 <input type="text" id="newModelManual" placeholder="или впишите ID модели вручную" style="margin-top:6px;">
                 <div class="form-hint">Выберите из списка или введите ID вручную</div>
             </div>
@@ -131,7 +140,16 @@
             </div>
             <div class="form-group">
                 <label>🤖 Модель</label>
-                <select id="editModel"></select>
+                <div class="model-search-wrap" id="editModelWrap">
+                    <input type="text" id="editModelSearch" class="model-search-input"
+                           placeholder="🔍 Поиск модели... (напр. mistral, gpt, claude)"
+                           autocomplete="off"
+                           onfocus="modelSearchOpen('edit')"
+                           oninput="modelSearchFilter('edit')">
+                    <input type="hidden" id="editModelValue">
+                    <div class="model-search-selected" id="editModelSelected"></div>
+                    <div class="model-search-dropdown" id="editModelDropdown"></div>
+                </div>
                 <input type="text" id="editModelManual" placeholder="или впишите ID модели вручную" style="margin-top:6px;">
             </div>
             <div class="form-group">
@@ -164,45 +182,7 @@
             </div>
         </div>
 
-        <!-- ТАБ: МОНЕТИЗАЦИЯ -->
-        <div class="tab-content" id="tab-monetization">
-            <div class="form-group">
-                <label>🎁 Бесплатных сообщений</label>
-                <input type="number" id="editFreeMessages" min="0" value="20">
-                <div class="form-hint">Сколько сообщений юзер получает бесплатно</div>
-            </div>
-            <div class="form-group">
-                <label>💬 Сообщений за покупку</label>
-                <input type="number" id="editMsgPerPurchase" min="1" value="50">
-            </div>
-            <div class="form-group">
-                <label>⭐ Цена в Stars</label>
-                <input type="number" id="editStarsPrice" min="1" value="50">
-            </div>
-        </div>
-
-        <!-- ТАБ: ЮЗЕРЫ -->
-        <div class="tab-content" id="tab-users">
-            <div id="usersContent">
-                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть юзеров</p>
-            </div>
-        </div>
-
-        <!-- ТАБ: СТАТИСТИКА -->
-        <div class="tab-content" id="tab-stats">
-            <div class="stats-grid" id="statsGrid">
-                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть статистику</p>
-            </div>
-        </div>
-
-        <!-- ТАБ: ПЛАТЕЖИ -->
-        <div class="tab-content" id="tab-payments">
-            <div id="paymentsTable">
-                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть платежи</p>
-            </div>
-        </div>
-
-                <!-- ТАБ: ИНСТРУМЕНТЫ -->
+        <!-- ТАБ: ИНСТРУМЕНТЫ -->
         <div class="tab-content" id="tab-tools">
             <div class="form-group">
                 <label class="toggle-label" style="font-size:15px; color:#fff;">
@@ -274,7 +254,8 @@
                     Установка пакетов (pip, apt, npm) 🔴
                 </label>
             </div>
-             <hr style="border-color:#222; margin:16px 0;">
+
+            <hr style="border-color:#222; margin:16px 0;">
             <p style="color:#8b8b8b; font-size:13px; margin-bottom:12px;">👤 Права пользователей</p>
 
             <div class="tool-row">
@@ -297,6 +278,44 @@
                     <span class="toggle-slider"></span>
                     Загрузка знаний (/learn) — юзер может добавить информацию в базу
                 </label>
+            </div>
+        </div>
+
+        <!-- ТАБ: МОНЕТИЗАЦИЯ -->
+        <div class="tab-content" id="tab-monetization">
+            <div class="form-group">
+                <label>🎁 Бесплатных сообщений</label>
+                <input type="number" id="editFreeMessages" min="0" value="20">
+                <div class="form-hint">Сколько сообщений юзер получает бесплатно</div>
+            </div>
+            <div class="form-group">
+                <label>💬 Сообщений за покупку</label>
+                <input type="number" id="editMsgPerPurchase" min="1" value="50">
+            </div>
+            <div class="form-group">
+                <label>⭐ Цена в Stars</label>
+                <input type="number" id="editStarsPrice" min="1" value="50">
+            </div>
+        </div>
+
+        <!-- ТАБ: ЮЗЕРЫ -->
+        <div class="tab-content" id="tab-users">
+            <div id="usersContent">
+                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть юзеров</p>
+            </div>
+        </div>
+
+        <!-- ТАБ: СТАТИСТИКА -->
+        <div class="tab-content" id="tab-stats">
+            <div class="stats-grid" id="statsGrid">
+                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть статистику</p>
+            </div>
+        </div>
+
+        <!-- ТАБ: ПЛАТЕЖИ -->
+        <div class="tab-content" id="tab-payments">
+            <div id="paymentsTable">
+                <p style="color:#8b8b8b;">Запустите бота чтобы увидеть платежи</p>
             </div>
         </div>
 
@@ -439,6 +458,19 @@
 
 <!-- Тосты -->
 <div class="toasts" id="toasts"></div>
+
+<!-- ====================================================
+     ФУТЕР
+     ==================================================== -->
+<footer class="footer">
+    <div class="footer-content">
+        <span>🤖 Bot Factory</span>
+        <span class="footer-separator">·</span>
+        <span>Разработка: <a href="https://eugeenyjoy.ru" target="_blank" rel="noopener noreferrer" class="footer-link">eugeenyjoy</a></span>
+        <span class="footer-separator">·</span>
+        <span class="footer-copy">© 2026</span>
+    </div>
+</footer>
 
 <script src="/static/app.js"></script>
 
