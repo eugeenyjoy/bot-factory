@@ -5,6 +5,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 from openai import OpenAI
 from core.memory import Memory
 from core.rag import RAG
@@ -14,6 +15,9 @@ from core.tools import ToolExecutor, parse_commands, ROOT_DIR
 logger = logging.getLogger("brain")
 
 DEFAULT_MAX_ROUNDS = 15
+
+# таймаут для AI запросов (секунды)
+AI_TIMEOUT = 60
 
 
 class Brain:
@@ -44,12 +48,17 @@ class Brain:
         else:
             base_url = AI_PROVIDERS["openrouter"]["base_url"]
 
-        self.ai_client = OpenAI(base_url=base_url, api_key=api_key)
+        self.ai_client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=AI_TIMEOUT
+        )
         self.memory = Memory(bot_id)
-        self._rag = None
+        self._rag: Optional[RAG] = None
 
         # пользовательские дополнения к промпту (per user_id)
-        self._user_prompts = {}
+        self._user_prompts: dict = {}
+        self._load_user_prompts()
 
         self.tool_executor = ToolExecutor(
             bot_id=bot_id,
@@ -73,6 +82,9 @@ class Brain:
     def chat(self, chat_id: int, user_id: int, message: str,
              user_name: str = None) -> dict:
 
+        if not message or not message.strip():
+            return {"ok": False, "error": "empty_message", "reply": "⚠️ Пустое сообщение"}
+
         # проверяем пользовательские команды
         cmd_result = self._handle_user_command(message, user_id, chat_id)
         if cmd_result:
@@ -87,7 +99,10 @@ class Brain:
 
         knowledge_context = ""
         if self._rag and self._rag.chunks:
-            knowledge_context = self._rag.get_context(message, top_k=self.rag_top_k)
+            try:
+                knowledge_context = self._rag.get_context(message, top_k=self.rag_top_k)
+            except Exception as e:
+                logger.error(f"RAG search error {self.bot_id}: {type(e).__name__}: {e}")
 
         system = self._build_system_prompt(user_id, user_name, facts, knowledge_context)
 
@@ -98,7 +113,7 @@ class Brain:
         try:
             reply, tool_log = self._call_ai(messages)
 
-            if not reply or reply.strip() == "":
+            if not reply or not reply.strip():
                 reply = "🤔 Пустой ответ."
 
             self.memory.save_message(chat_id, user_id, "user", message)
@@ -111,172 +126,229 @@ class Brain:
                 result["tools_used"] = tool_log
             return result
 
+        except TimeoutError:
+            logger.error(f"AI timeout for bot {self.bot_id}")
+            return {"ok": False, "error": "timeout", "reply": "⏱️ AI не ответил вовремя. Попробуйте ещё раз."}
         except Exception as e:
-            logger.error(f"AI error for bot {self.bot_id}: {e}")
-            return {"ok": False, "error": str(e)}
+            logger.error(f"AI error for bot {self.bot_id}: {type(e).__name__}: {e}")
+            return {"ok": False, "error": str(e), "reply": "⚠️ Ошибка AI. Попробуйте ещё раз."}
 
     # ============================
     # ПОЛЬЗОВАТЕЛЬСКИЕ КОМАНДЫ
     # ============================
 
-    def _handle_user_command(self, message: str, user_id: int, chat_id: int) -> dict:
+    def _handle_user_command(self, message: str, user_id: int, chat_id: int) -> Optional[dict]:
         """
         Обрабатывает команды пользователя.
         Возвращает dict с ответом или None если это обычное сообщение.
-
-        Команды:
-            /help — список команд
-            /prompt <текст> — добавить к системному промпту
-            /prompt — показать текущие дополнения
-            /prompt_clear — очистить дополнения
-            /learn <текст> — добавить знания
-            /knowledge — показать инфо о базе знаний
-            /clear — очистить историю чата
-            /stats — показать статистику
         """
         msg = message.strip()
         if not msg.startswith('/'):
             return None
 
         parts = msg.split(maxsplit=1)
-        cmd = parts[0].lower()
+        cmd = parts[0].lower().split('@')[0]  # убираем @botname из команд
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        # /help
         if cmd == '/help':
-            lines = ["📋 **Доступные команды:**", ""]
-            lines.append("`/help` — эта справка")
+            return self._cmd_help()
+        elif cmd == '/clear':
+            return self._cmd_clear(chat_id)
+        elif cmd == '/stats':
+            return self._cmd_stats(user_id)
+        elif cmd == '/prompt':
+            return self._cmd_prompt(user_id, arg)
+        elif cmd == '/prompt_clear':
+            return self._cmd_prompt_clear(user_id)
+        elif cmd == '/learn':
+            return self._cmd_learn(user_id, arg)
+        elif cmd == '/knowledge':
+            return self._cmd_knowledge()
 
-            if self.permissions.get("user_can_clear_history", True):
-                lines.append("`/clear` — очистить историю чата")
-
-            if self.permissions.get("user_can_add_prompt", False):
-                lines.append("`/prompt <текст>` — добавить инструкцию боту")
-                lines.append("`/prompt` — показать текущие дополнения")
-                lines.append("`/prompt_clear` — убрать дополнения")
-
-            if self.permissions.get("user_can_add_knowledge", False):
-                lines.append("`/learn <текст>` — добавить знания в базу")
-                lines.append("`/knowledge` — инфо о базе знаний")
-
-            lines.append("`/stats` — статистика")
-            return {"ok": True, "reply": "\n".join(lines)}
-
-        # /clear
-        if cmd == '/clear':
-            if not self.permissions.get("user_can_clear_history", True):
-                return {"ok": True, "reply": "🚫 Очистка истории отключена"}
-            self.memory.clear_history(chat_id)
-            return {"ok": True, "reply": "🗑️ История чата очищена"}
-
-        # /stats
-        if cmd == '/stats':
-            stats = self.memory.get_stats()
-            user_prompts = self._user_prompts.get(user_id, [])
-            lines = [
-                f"📊 **Статистика:**",
-                f"👥 Юзеров: {stats.get('total_users', 0)}",
-                f"💬 Сообщений: {stats.get('total_messages', 0)}",
-                f"🧠 Модель: {self.model}",
-            ]
-            if self._rag and self._rag.chunks:
-                info = self._rag.get_info()
-                lines.append(f"📚 База знаний: {info.get('total_files', 0)} файлов, {info.get('total_chunks', 0)} чанков")
-            if user_prompts:
-                lines.append(f"📝 Ваших дополнений к промпту: {len(user_prompts)}")
-            if self.tools_enabled:
-                lines.append(f"🔧 Терминал: ✅ ({self.tool_executor.access_mode})")
-            return {"ok": True, "reply": "\n".join(lines)}
-
-        # /prompt
-        if cmd == '/prompt':
-            if not self.permissions.get("user_can_add_prompt", False):
-                return {"ok": True, "reply": "🚫 Добавление промптов отключено администратором"}
-
-            if not arg:
-                # показать текущие
-                prompts = self._user_prompts.get(user_id, [])
-                if not prompts:
-                    return {"ok": True, "reply": "📝 У вас нет дополнений к промпту.\n\nИспользуйте: `/prompt <текст>` чтобы добавить"}
-                lines = ["📝 **Ваши дополнения к промпту:**", ""]
-                for i, p in enumerate(prompts, 1):
-                    lines.append(f"{i}. {p[:100]}{'...' if len(p) > 100 else ''}")
-                lines.append(f"\n`/prompt_clear` — убрать все")
-                return {"ok": True, "reply": "\n".join(lines)}
-
-            # добавить
-            if user_id not in self._user_prompts:
-                self._user_prompts[user_id] = []
-            self._user_prompts[user_id].append(arg)
-
-            # сохраняем в файл чтобы не терялось при перезапуске
-            self._save_user_prompts()
-
-            count = len(self._user_prompts[user_id])
-            return {"ok": True, "reply": f"✅ Дополнение добавлено (всего: {count})\n\n💡 Теперь бот будет учитывать: _{arg[:100]}_"}
-
-        # /prompt_clear
-        if cmd == '/prompt_clear':
-            if not self.permissions.get("user_can_add_prompt", False):
-                return {"ok": True, "reply": "🚫 Управление промптами отключено"}
-            self._user_prompts.pop(user_id, None)
-            self._save_user_prompts()
-            return {"ok": True, "reply": "🗑️ Все ваши дополнения к промпту удалены"}
-
-        # /learn
-        if cmd == '/learn':
-            if not self.permissions.get("user_can_add_knowledge", False):
-                return {"ok": True, "reply": "🚫 Добавление знаний отключено администратором"}
-
-            if not arg:
-                return {"ok": True, "reply": "📚 Использование: `/learn <текст>`\n\nПример: `/learn Наш офис работает с 9 до 18, пн-пт`"}
-
-            # добавляем в RAG
-            try:
-                name = f"user_{user_id}_{len(self.rag.chunks)}"
-                chunks = self.rag.add_text(name, arg)
-                return {"ok": True, "reply": f"✅ Знания добавлены! ({chunks} чанков)\n\nТеперь бот будет использовать эту информацию при ответах."}
-            except Exception as e:
-                return {"ok": True, "reply": f"❌ Ошибка: {e}"}
-
-        # /knowledge
-        if cmd == '/knowledge':
-            if not self._rag or not self._rag.chunks:
-                return {"ok": True, "reply": "📚 База знаний пуста"}
-            info = self.rag.get_info()
-            lines = [
-                f"📚 **База знаний:**",
-                f"📄 Файлов: {info.get('total_files', 0)}",
-                f"🧩 Чанков: {info.get('total_chunks', 0)}",
-            ]
-            if info.get('files'):
-                lines.append("")
-                for f in info['files'][:10]:
-                    lines.append(f"  • {f['name']} ({f['chunks']} чанков)")
-            return {"ok": True, "reply": "\n".join(lines)}
-
-        # неизвестная команда — пропускаем (пусть AI обработает)
+        # неизвестная команда — пусть AI обработает
         return None
+
+    def _cmd_help(self) -> dict:
+        lines = ["📋 **Доступные команды:**", ""]
+        lines.append("`/help` — эта справка")
+
+        if self.permissions.get("user_can_clear_history", True):
+            lines.append("`/clear` — очистить историю чата")
+
+        if self.permissions.get("user_can_add_prompt", False):
+            lines.append("`/prompt <текст>` — добавить инструкцию боту")
+            lines.append("`/prompt` — показать текущие дополнения")
+            lines.append("`/prompt_clear` — убрать дополнения")
+
+        if self.permissions.get("user_can_add_knowledge", False):
+            lines.append("`/learn <текст>` — добавить знания в базу")
+            lines.append("`/knowledge` — инфо о базе знаний")
+
+        lines.append("`/stats` — статистика")
+        return {"ok": True, "reply": "\n".join(lines)}
+
+    def _cmd_clear(self, chat_id: int) -> dict:
+        if not self.permissions.get("user_can_clear_history", True):
+            return {"ok": True, "reply": "🚫 Очистка истории отключена"}
+        self.memory.clear_history(chat_id)
+        return {"ok": True, "reply": "🗑️ История чата очищена"}
+
+    def _cmd_stats(self, user_id: int) -> dict:
+        try:
+            stats = self.memory.get_stats()
+        except Exception as e:
+            logger.error(f"Stats error: {e}")
+            stats = {}
+
+        user_prompts = self._user_prompts.get(user_id, [])
+        lines = [
+            "📊 **Статистика:**",
+            f"👥 Юзеров: {stats.get('total_users', 0)}",
+            f"💬 Сообщений: {stats.get('total_messages', 0)}",
+            f"🧠 Модель: {self.model}",
+        ]
+        if self._rag and self._rag.chunks:
+            try:
+                info = self._rag.get_info()
+                lines.append(
+                    f"📚 База знаний: {info.get('total_files', 0)} файлов, "
+                    f"{info.get('total_chunks', 0)} чанков"
+                )
+            except Exception:
+                pass
+        if user_prompts:
+            lines.append(f"📝 Ваших дополнений к промпту: {len(user_prompts)}")
+        if self.tools_enabled:
+            lines.append(f"🔧 Терминал: ✅ ({self.tool_executor.access_mode})")
+        return {"ok": True, "reply": "\n".join(lines)}
+
+    def _cmd_prompt(self, user_id: int, arg: str) -> dict:
+        if not self.permissions.get("user_can_add_prompt", False):
+            return {"ok": True, "reply": "🚫 Добавление промптов отключено администратором"}
+
+        if not arg:
+            prompts = self._user_prompts.get(user_id, [])
+            if not prompts:
+                return {"ok": True, "reply": (
+                    "📝 У вас нет дополнений к промпту.\n\n"
+                    "Используйте: `/prompt <текст>` чтобы добавить"
+                )}
+            lines = ["📝 **Ваши дополнения к промпту:**", ""]
+            for i, p in enumerate(prompts, 1):
+                preview = p[:100] + ('...' if len(p) > 100 else '')
+                lines.append(f"{i}. {preview}")
+            lines.append("\n`/prompt_clear` — убрать все")
+            return {"ok": True, "reply": "\n".join(lines)}
+
+        # лимит на длину и количество
+        if len(arg) > 2000:
+            return {"ok": True, "reply": "⚠️ Слишком длинный текст (макс 2000 символов)"}
+
+        if user_id not in self._user_prompts:
+            self._user_prompts[user_id] = []
+
+        if len(self._user_prompts[user_id]) >= 20:
+            return {"ok": True, "reply": "⚠️ Максимум 20 дополнений. Используйте /prompt_clear"}
+
+        self._user_prompts[user_id].append(arg)
+        self._save_user_prompts()
+
+        count = len(self._user_prompts[user_id])
+        preview = arg[:100]
+        return {"ok": True, "reply": (
+            f"✅ Дополнение добавлено (всего: {count})\n\n"
+            f"💡 Теперь бот будет учитывать: _{preview}_"
+        )}
+
+    def _cmd_prompt_clear(self, user_id: int) -> dict:
+        if not self.permissions.get("user_can_add_prompt", False):
+            return {"ok": True, "reply": "🚫 Управление промптами отключено"}
+        self._user_prompts.pop(user_id, None)
+        self._save_user_prompts()
+        return {"ok": True, "reply": "🗑️ Все ваши дополнения к промпту удалены"}
+
+    def _cmd_learn(self, user_id: int, arg: str) -> dict:
+        if not self.permissions.get("user_can_add_knowledge", False):
+            return {"ok": True, "reply": "🚫 Добавление знаний отключено администратором"}
+
+        if not arg:
+            return {"ok": True, "reply": (
+                "📚 Использование: `/learn <текст>`\n\n"
+                "Пример: `/learn Наш офис работает с 9 до 18, пн-пт`"
+            )}
+
+        if len(arg) > 50000:
+            return {"ok": True, "reply": "⚠️ Текст слишком большой (макс 50000 символов)"}
+
+        try:
+            name = f"user_{user_id}_{len(self.rag.chunks)}"
+            chunks = self.rag.add_text(name, arg)
+            return {"ok": True, "reply": (
+                f"✅ Знания добавлены! ({chunks} чанков)\n\n"
+                f"Теперь бот будет использовать эту информацию при ответах."
+            )}
+        except Exception as e:
+            logger.error(f"Learn error {self.bot_id}: {type(e).__name__}: {e}")
+            return {"ok": True, "reply": f"❌ Ошибка: {str(e)[:200]}"}
+
+    def _cmd_knowledge(self) -> dict:
+        if not self._rag or not self._rag.chunks:
+            return {"ok": True, "reply": "📚 База знаний пуста"}
+
+        try:
+            info = self.rag.get_info()
+        except Exception as e:
+            logger.error(f"Knowledge info error: {e}")
+            return {"ok": True, "reply": "❌ Ошибка получения информации"}
+
+        lines = [
+            "📚 **База знаний:**",
+            f"📄 Файлов: {info.get('total_files', 0)}",
+            f"🧩 Чанков: {info.get('total_chunks', 0)}",
+        ]
+        files = info.get('files', [])
+        if files:
+            lines.append("")
+            for f in files[:10]:
+                lines.append(f"  • {f['name']} ({f['chunks']} чанков)")
+            if len(files) > 10:
+                lines.append(f"  ... и ещё {len(files) - 10}")
+        return {"ok": True, "reply": "\n".join(lines)}
 
     def _save_user_prompts(self):
         """Сохраняет пользовательские промпты в файл"""
         prompts_file = Path(f"bots/bot_{self.bot_id}/user_prompts.json")
         try:
-            # конвертируем ключи в строки для JSON
+            prompts_file.parent.mkdir(parents=True, exist_ok=True)
             data = {str(k): v for k, v in self._user_prompts.items()}
-            prompts_file.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-        except Exception as e:
-            logger.error(f"Failed to save user prompts: {e}")
+            prompts_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except OSError as e:
+            logger.error(f"Failed to save user prompts {self.bot_id}: {e}")
+        except (TypeError, ValueError) as e:
+            logger.error(f"Failed to serialize user prompts {self.bot_id}: {e}")
 
     def _load_user_prompts(self):
         """Загружает пользовательские промпты"""
         prompts_file = Path(f"bots/bot_{self.bot_id}/user_prompts.json")
         try:
             if prompts_file.exists():
-                data = json.loads(prompts_file.read_text(encoding='utf-8'))
-                self._user_prompts = {int(k): v for k, v in data.items()}
-        except Exception as e:
-            logger.error(f"Failed to load user prompts: {e}")
+                raw = prompts_file.read_text(encoding='utf-8')
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    self._user_prompts = {int(k): v for k, v in data.items()
+                                          if isinstance(v, list)}
+                else:
+                    logger.warning(f"Invalid user_prompts format for {self.bot_id}")
+                    self._user_prompts = {}
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse user prompts {self.bot_id}: {e}")
+            self._user_prompts = {}
+        except OSError as e:
+            logger.error(f"Failed to read user prompts {self.bot_id}: {e}")
+            self._user_prompts = {}
 
     # ============================
     # AI ВЫЗОВ
@@ -287,16 +359,27 @@ class Brain:
         formatted = ""
 
         for round_num in range(self.max_tool_rounds):
-            response = self.ai_client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=4096,
-                temperature=0.7
-            )
+            try:
+                response = self.ai_client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=4096,
+                    temperature=0.7
+                )
+            except Exception as e:
+                logger.error(f"AI API error {self.bot_id} round {round_num}: {type(e).__name__}: {e}")
+                if tool_log:
+                    return f"⚠️ AI ошибка после {len(tool_log)} команд.\n```\n{formatted}\n```", tool_log
+                raise
 
-            reply = response.choices[0].message.content or ""
-            if not reply and hasattr(response.choices[0].message, 'refusal'):
-                reply = response.choices[0].message.refusal or ""
+            choice = response.choices[0] if response.choices else None
+            if not choice:
+                logger.error(f"AI returned no choices for {self.bot_id}")
+                return "⚠️ AI не вернул ответ", tool_log
+
+            reply = choice.message.content or ""
+            if not reply and hasattr(choice.message, 'refusal'):
+                reply = choice.message.refusal or ""
 
             if not self.tools_enabled:
                 return reply, tool_log
@@ -305,38 +388,52 @@ class Brain:
             if not commands:
                 return reply, tool_log
 
-            logger.info(f"🔧 Bot {self.bot_id} round {round_num+1}: {len(commands)} cmds")
-            results = self.tool_executor.execute_commands(commands)
-            formatted = self.tool_executor.format_results(results)
+            logger.info(f"🔧 Bot {self.bot_id} round {round_num + 1}: {len(commands)} cmds")
+
+            try:
+                results = self.tool_executor.execute_commands(commands)
+                formatted = self.tool_executor.format_results(results)
+            except Exception as e:
+                logger.error(f"Tool execution error {self.bot_id}: {type(e).__name__}: {e}")
+                return f"{reply}\n\n⚠️ Ошибка выполнения команды: {e}", tool_log
 
             for r in results:
                 tool_log.append({
-                    "command": r.get("command"),
-                    "exit_code": r.get("exit_code"),
+                    "command": r.get("command", ""),
+                    "exit_code": r.get("exit_code", -1),
                     "error": r.get("error"),
                 })
 
             messages.append({"role": "assistant", "content": reply})
 
-            if round_num >= self.max_tool_rounds - 2:
+            is_last = round_num >= self.max_tool_rounds - 2
+            if is_last:
                 messages.append({
                     "role": "user",
-                    "content": f"Результаты:\n```\n{formatted}\n```\n\nДай ФИНАЛЬНЫЙ ответ. НЕ пиши больше команд."
+                    "content": (
+                        f"Результаты:\n```\n{formatted}\n```\n\n"
+                        f"Дай ФИНАЛЬНЫЙ ответ. НЕ пиши больше команд."
+                    )
                 })
             else:
                 messages.append({
                     "role": "user",
-                    "content": f"Результаты:\n```\n{formatted}\n```\n\nОтветь пользователю. Если нужно ещё — пиши ```bash``` блоки."
+                    "content": (
+                        f"Результаты:\n```\n{formatted}\n```\n\n"
+                        f"Ответь пользователю. Если нужно ещё — пиши ```bash``` блоки."
+                    )
                 })
-            continue
 
+        # финальный вызов после всех раундов
         try:
             response = self.ai_client.chat.completions.create(
                 model=self.model, messages=messages,
                 max_tokens=4096, temperature=0.7
             )
-            return response.choices[0].message.content or formatted, tool_log
-        except:
+            final = response.choices[0].message.content if response.choices else ""
+            return final or formatted, tool_log
+        except Exception as e:
+            logger.error(f"AI final call error {self.bot_id}: {type(e).__name__}: {e}")
             return f"Выполнено {len(tool_log)} команд.\n```\n{formatted}\n```", tool_log
 
     # ============================
@@ -344,7 +441,7 @@ class Brain:
     # ============================
 
     def _build_system_prompt(self, user_id=None, user_name=None,
-                              facts=None, knowledge_context=""):
+                             facts=None, knowledge_context=""):
         parts = [self.system_prompt]
 
         # пользовательские дополнения
@@ -352,7 +449,9 @@ class Brain:
             user_additions = self._user_prompts[user_id]
             if user_additions:
                 additions_text = "\n".join(f"- {p}" for p in user_additions)
-                parts.append(f"\n📌 ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ ПОЛЬЗОВАТЕЛЯ:\n{additions_text}")
+                parts.append(
+                    f"\n📌 ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ ПОЛЬЗОВАТЕЛЯ:\n{additions_text}"
+                )
 
         if self.tools_enabled:
             cwd = self.tool_executor.cwd
@@ -366,35 +465,39 @@ class Brain:
                 "custom": "Указанные папки",
             }
 
+            write = '✅ запись' if perms.get('write_files') else '❌ запись'
+            delete = '✅ удаление' if perms.get('delete_files') else '❌ удаление'
+            network = '✅ сеть' if perms.get('network') else '❌ сеть'
+
             parts.append(f"""
+                🔧 ТЕРМИНАЛ
+                Доступ к реальному терминалу Linux.
+                Режим: {mode_desc.get(mode, mode)}
+                Рабочая директория: {cwd}
 
-🔧 ТЕРМИНАЛ
-Доступ к реальному терминалу Linux.
-Режим: {mode_desc.get(mode, mode)}
-Рабочая директория: {cwd}
+                Команды пиши в блоке:
+                ```bash
+                команда
+                Права: {write} | {delete} | {network}
 
-Команды пиши в блоке:
-```bash
-команда
-Права: {'✅ запись' if perms.get('write_files') else '❌ запись'} | {'✅ удаление' if perms.get('delete_files') else '❌ удаление'} | {'✅ сеть' if perms.get('network') else '❌ сеть'}
+                ПРАВИЛА:
 
-ПРАВИЛА:
+                ВСЕГДА используй реальные команды для файлов и системы
 
-ВСЕГДА используй реальные команды для файлов и системы
+                НИКОГДА не выдумывай — читай через cat
 
-НИКОГДА не выдумывай — читай через cat
+                НИКОГДА не говори что нет доступа — он ЕСТЬ
+                """)
 
-НИКОГДА не говори что нет доступа — он ЕСТЬ
-""")
+            if facts:
+                facts_text = "\n".join(f"- {f}" for f in facts)
+                parts.append(f"\nФакты о пользователе:\n{facts_text}")
+            if user_name:
+                parts.append(f"\nИмя: {user_name}")
+            if knowledge_context:
+                parts.append(f"\n📚 БАЗА ЗНАНИЙ:\n{knowledge_context}")
 
-        if facts:
-            parts.append(f"\nФакты о пользователе:\n" + "\n".join(f"- {f}" for f in facts))
-        if user_name:
-            parts.append(f"\nИмя: {user_name}")
-        if knowledge_context:
-            parts.append(f"\n📚 БАЗА ЗНАНИЙ:\n{knowledge_context}")
-
-        return "\n".join(parts)
+            return "\n".join(parts)
 
     #============================
     #УПРАВЛЕНИЕ
@@ -418,12 +521,28 @@ class Brain:
         return self.memory.get_all_users()
 
     def get_stats(self) -> dict:
-        stats = self.memory.get_stats()
+        try:
+            stats = self.memory.get_stats()
+        except Exception as e:
+            logger.error(f"Memory stats error {self.bot_id}: {e}")
+            stats = {}
+
         if self._rag:
-            stats["knowledge"] = self._rag.get_info()
-            stats["tools"] = self.tool_executor.get_info()
-            stats["tools"]["enabled"] = self.tools_enabled
-            return stats
+            try:
+                stats["knowledge"] = self._rag.get_info()
+            except Exception as e:
+                logger.error(f"RAG info error {self.bot_id}: {e}")
+                stats["knowledge"] = {}
+
+            try:
+                tool_info = self.tool_executor.get_info()
+                tool_info["enabled"] = self.tools_enabled
+                stats["tools"] = tool_info
+            except Exception as e:
+                logger.error(f"Tools info error {self.bot_id}: {e}")
+                stats["tools"] = {"enabled": self.tools_enabled}
+
+        return stats
 
     def update_model(self, model: str):
         self.model = model
@@ -432,13 +551,14 @@ class Brain:
         self.system_prompt = prompt
 
     def update_free_limit(self, limit: int):
-        self.free_messages = limit
+        self.free_messages = max(0, limit)
 
     def update_max_history(self, limit: int):
-        self.max_history = limit
+        self.max_history = max(1, min(200, limit))
 
     def update_tool_permissions(self, permissions: dict):
-        self.tool_executor.permissions.update(permissions)
+        if isinstance(permissions, dict):
+            self.tool_executor.permissions.update(permissions)
 
     def set_tools_enabled(self, enabled: bool):
-        self.tools_enabled = enabled
+        self.tools_enabled = bool(enabled)

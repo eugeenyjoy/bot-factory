@@ -1,19 +1,52 @@
 """
 Движок — управляет ботами
 Веб-чат работает всегда, Telegram подключается опционально
-Используется python-telegram-bot (не aiogram) — работает в потоках
+python-telegram-bot — работает в потоках с собственным event loop
 """
 
 import asyncio
 import threading
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 from core.brain import Brain
 from core.config import load_config, save_config, list_bots
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S"
+)
 logger = logging.getLogger("engine")
+
+# текстовые расширения — единое место
+TEXT_EXTS = {
+    'txt', 'md', 'csv', 'json', 'html', 'xml', 'yml', 'yaml',
+    'py', 'js', 'ts', 'css', 'log', 'ini', 'cfg', 'toml',
+    'c', 'cpp', 'h', 'java', 'go', 'rs', 'rb', 'php', 'sh'
+}
+
+
+def _build_brain(config: dict) -> Brain:
+    """Фабрика Brain — убирает дублирование"""
+    return Brain(
+        bot_id=config["bot_id"],
+        api_key=config["api_key"],
+        model=config["model"],
+        system_prompt=config["system_prompt"],
+        max_history=config.get("max_history", 20),
+        free_messages=config.get("free_messages", 20),
+        rag_top_k=config.get("rag_top_k", 3),
+        provider=config.get("provider", "openrouter"),
+        custom_base_url=config.get("custom_base_url", ""),
+        tools_enabled=config.get("tools_enabled", True),
+        tool_permissions=config.get("tool_permissions"),
+        allowed_paths=config.get("allowed_paths"),
+        blocked_paths=config.get("blocked_paths"),
+        access_mode=config.get("access_mode", "sandbox"),
+        working_directory=config.get("working_directory", ""),
+        max_tool_rounds=config.get("max_tool_rounds", 15),
+    )
 
 
 class TelegramRunner:
@@ -25,30 +58,45 @@ class TelegramRunner:
         self.bot_id = config["bot_id"]
         self.token = config["bot_token"]
 
-        self._thread = None
-        self._loop = None
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._app = None
         self.is_running = False
 
     def start(self):
         if self.is_running:
+            logger.warning(f"TG {self.bot_id}: already running")
             return
 
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name=f"tg-{self.bot_id}"
+        )
         self._thread.start()
 
     def stop(self):
+        if not self.is_running:
+            return
+
         self.is_running = False
+
         if self._loop and self._app:
             try:
-                asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop)
-            except Exception:
-                pass
+                future = asyncio.run_coroutine_threadsafe(
+                    self._shutdown(), self._loop
+                )
+                future.result(timeout=10)
+            except TimeoutError:
+                logger.error(f"TG {self.bot_id}: shutdown timed out")
+            except Exception as e:
+                logger.error(f"TG {self.bot_id}: shutdown error: {type(e).__name__}: {e}")
 
         if self._thread:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                logger.warning(f"TG {self.bot_id}: thread still alive after join")
             self._thread = None
 
+        self._app = None
         logger.info(f"🔴 Telegram stopped for bot {self.bot_id}")
 
     def _run(self):
@@ -58,11 +106,14 @@ class TelegramRunner:
             asyncio.set_event_loop(self._loop)
             self._loop.run_until_complete(self._start_polling())
         except Exception as e:
-            logger.error(f"Telegram bot {self.bot_id} crashed: {e}")
+            logger.error(f"TG {self.bot_id} crashed: {type(e).__name__}: {e}")
         finally:
             self.is_running = False
             if self._loop and not self._loop.is_closed():
-                self._loop.close()
+                try:
+                    self._loop.close()
+                except Exception:
+                    pass
             self._loop = None
 
     async def _start_polling(self):
@@ -95,62 +146,78 @@ class TelegramRunner:
             await update.message.reply_text("🗑️ История очищена!")
 
         async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-            remaining = brain.memory.get_remaining(
-                update.effective_user.id, brain.free_messages
-            )
-            user = brain.memory.get_or_create_user(update.effective_user.id)
-            if user.get("is_vip"):
-                await update.message.reply_text("👑 VIP — безлимит!")
-            else:
-                await update.message.reply_text(
-                    f"📊 Осталось: {remaining}\n"
-                    f"Использовано: {user['messages_used']}\n"
-                    f"Куплено: {user['messages_bought']}\n\n"
-                    f"/buy — купить ещё"
+            try:
+                remaining = brain.memory.get_remaining(
+                    update.effective_user.id, brain.free_messages
                 )
+                user = brain.memory.get_or_create_user(update.effective_user.id)
+                if user.get("is_vip"):
+                    await update.message.reply_text("👑 VIP — безлимит!")
+                else:
+                    await update.message.reply_text(
+                        f"📊 Осталось: {remaining}\n"
+                        f"Использовано: {user['messages_used']}\n"
+                        f"Куплено: {user['messages_bought']}\n\n"
+                        f"/buy — купить ещё"
+                    )
+            except Exception as e:
+                logger.error(f"TG balance error: {type(e).__name__}: {e}")
+                await update.message.reply_text("⚠️ Ошибка получения баланса")
 
         async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             from telegram import LabeledPrice
             price = config.get("stars_price", 50)
             msgs = config.get("messages_per_purchase", 50)
-            await update.message.reply_invoice(
-                title=f"📦 {msgs} сообщений",
-                description=f"Пакет из {msgs} сообщений",
-                payload=f"buy_{msgs}",
-                currency="XTR",
-                prices=[LabeledPrice(label="Сообщения", amount=price)]
-            )
+            try:
+                await update.message.reply_invoice(
+                    title=f"📦 {msgs} сообщений",
+                    description=f"Пакет из {msgs} сообщений",
+                    payload=f"buy_{msgs}",
+                    currency="XTR",
+                    prices=[LabeledPrice(label="Сообщения", amount=price)]
+                )
+            except Exception as e:
+                logger.error(f"TG buy error: {type(e).__name__}: {e}")
+                await update.message.reply_text("⚠️ Ошибка создания платежа")
 
         async def pre_checkout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.pre_checkout_query.answer(ok=True)
 
         async def on_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-            payment = update.message.successful_payment
-            msgs = config.get("messages_per_purchase", 50)
-            brain.add_purchased(
-                user_id=update.effective_user.id,
-                messages=msgs,
-                amount=payment.total_amount,
-                source="telegram"
-            )
-            remaining = brain.memory.get_remaining(
-                update.effective_user.id, brain.free_messages
-            )
-            await update.message.reply_text(
-                f"✅ Оплачено! +{msgs} сообщений\nБаланс: {remaining}"
-            )
+            try:
+                payment = update.message.successful_payment
+                msgs = config.get("messages_per_purchase", 50)
+                brain.add_purchased(
+                    user_id=update.effective_user.id,
+                    messages=msgs,
+                    amount=payment.total_amount,
+                    source="telegram"
+                )
+                remaining = brain.memory.get_remaining(
+                    update.effective_user.id, brain.free_messages
+                )
+                await update.message.reply_text(
+                    f"✅ Оплачено! +{msgs} сообщений\nБаланс: {remaining}"
+                )
+            except Exception as e:
+                logger.error(f"TG payment error: {type(e).__name__}: {e}")
+                await update.message.reply_text("⚠️ Ошибка обработки платежа")
 
         async def cmd_generic(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             """Обработка /help, /prompt, /learn и т.д. через brain"""
             text = update.message.text or ""
-            result = brain.chat(
-                chat_id=update.effective_chat.id,
-                user_id=update.effective_user.id,
-                message=text,
-                user_name=update.effective_user.first_name
-            )
-            reply = result.get("reply", "...")
-            await self._send_long(update, reply)
+            try:
+                result = brain.chat(
+                    chat_id=update.effective_chat.id,
+                    user_id=update.effective_user.id,
+                    message=text,
+                    user_name=update.effective_user.first_name
+                )
+                reply = result.get("reply", "...")
+            except Exception as e:
+                logger.error(f"TG cmd error {self.bot_id}: {type(e).__name__}: {e}")
+                reply = "⚠️ Ошибка обработки команды"
+            await _send_long(update, reply)
 
         async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not update.message or not update.message.text:
@@ -160,30 +227,46 @@ class TelegramRunner:
             if update.effective_chat.type != "private":
                 if not config.get("enable_groups", False):
                     return
-                bot_info = await ctx.bot.get_me()
-                bot_username = f"@{bot_info.username}"
-                is_reply = (
-                    update.message.reply_to_message and
-                    update.message.reply_to_message.from_user and
-                    update.message.reply_to_message.from_user.id == bot_info.id
-                )
-                is_mention = bot_username.lower() in update.message.text.lower()
-                if not is_reply and not is_mention:
+                try:
+                    bot_info = await ctx.bot.get_me()
+                    bot_username = f"@{bot_info.username}"
+                    is_reply = (
+                        update.message.reply_to_message
+                        and update.message.reply_to_message.from_user
+                        and update.message.reply_to_message.from_user.id == bot_info.id
+                    )
+                    is_mention = bot_username.lower() in update.message.text.lower()
+                    if not is_reply and not is_mention:
+                        return
+                except Exception as e:
+                    logger.error(f"TG group check error: {e}")
                     return
 
-            await ctx.bot.send_chat_action(
-                chat_id=update.effective_chat.id, action="typing"
-            )
+            try:
+                await ctx.bot.send_chat_action(
+                    chat_id=update.effective_chat.id, action="typing"
+                )
+            except Exception:
+                pass
 
-            result = brain.chat(
-                chat_id=update.effective_chat.id,
-                user_id=update.effective_user.id,
-                message=update.message.text,
-                user_name=update.effective_user.first_name
-            )
+            try:
+                result = brain.chat(
+                    chat_id=update.effective_chat.id,
+                    user_id=update.effective_user.id,
+                    message=update.message.text,
+                    user_name=update.effective_user.first_name
+                )
+            except Exception as e:
+                logger.error(f"TG chat error {self.bot_id}: {type(e).__name__}: {e}")
+                await update.message.reply_text("⚠️ Внутренняя ошибка. Попробуйте ещё раз.")
+                return
+
+            if result is None:
+                await update.message.reply_text("⚠️ Нет ответа от AI")
+                return
 
             if result.get("ok") is not False and result.get("reply"):
-                await self._send_long(update, result["reply"])
+                await _send_long(update, result["reply"])
             elif result.get("error") == "limit":
                 price = config.get("stars_price", 50)
                 msgs = config.get("messages_per_purchase", 50)
@@ -192,13 +275,17 @@ class TelegramRunner:
                     f"💎 /buy — купить {msgs} сообщений за {price} ⭐"
                 )
             else:
-                await update.message.reply_text(
-                    f"⚠️ Ошибка: {result.get('error', 'unknown')}"
-                )
+                error_msg = result.get("error", "unknown")
+                logger.warning(f"TG bot {self.bot_id} error response: {error_msg}")
+                await update.message.reply_text(f"⚠️ Ошибка: {error_msg}")
 
         async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             """Загрузка файла как знания"""
-            perms = brain.permissions
+            try:
+                perms = brain.permissions
+            except AttributeError:
+                perms = {}
+
             if not perms.get("user_can_add_knowledge", False):
                 await update.message.reply_text("🚫 Загрузка файлов отключена")
                 return
@@ -207,13 +294,16 @@ class TelegramRunner:
             if not doc:
                 return
 
-            if doc.file_size > 5 * 1024 * 1024:
+            if doc.file_size and doc.file_size > 5 * 1024 * 1024:
                 await update.message.reply_text("❌ Макс 5MB")
                 return
 
-            await ctx.bot.send_chat_action(
-                chat_id=update.effective_chat.id, action="typing"
-            )
+            try:
+                await ctx.bot.send_chat_action(
+                    chat_id=update.effective_chat.id, action="typing"
+                )
+            except Exception:
+                pass
 
             try:
                 file = await ctx.bot.get_file(doc.file_id)
@@ -222,20 +312,17 @@ class TelegramRunner:
                 filename = doc.file_name or "document.txt"
                 ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'txt'
 
-                text_exts = {
-                    'txt', 'md', 'csv', 'json', 'html', 'xml', 'yml', 'yaml',
-                    'py', 'js', 'ts', 'css', 'log', 'ini', 'cfg', 'toml',
-                    'c', 'cpp', 'h', 'java', 'go', 'rs', 'rb', 'php', 'sh'
-                }
-
-                if ext in text_exts:
-                    try:
-                        text = bytes(data).decode('utf-8')
-                    except UnicodeDecodeError:
-                        text = bytes(data).decode('cp1251', errors='ignore')
-                else:
-                    await update.message.reply_text(f"❌ .{ext} не поддерживается")
+                if ext not in TEXT_EXTS:
+                    await update.message.reply_text(
+                        f"❌ .{ext} не поддерживается.\n"
+                        f"Поддерживаемые: {', '.join(sorted(TEXT_EXTS)[:10])}..."
+                    )
                     return
+
+                try:
+                    text = bytes(data).decode('utf-8')
+                except UnicodeDecodeError:
+                    text = bytes(data).decode('cp1251', errors='ignore')
 
                 if not text.strip():
                     await update.message.reply_text("❌ Файл пустой")
@@ -243,13 +330,28 @@ class TelegramRunner:
 
                 display_name = f"👤 {filename}"
                 chunks = brain.rag.add_text(display_name, text)
+                logger.info(f"TG file upload {self.bot_id}: {filename} → {chunks} chunks")
                 await update.message.reply_text(
                     f"✅ {filename} добавлен!\n📊 {chunks} чанков"
                 )
 
             except Exception as e:
-                logger.error(f"TG file upload: {e}")
-                await update.message.reply_text(f"❌ {e}")
+                logger.error(f"TG file upload {self.bot_id}: {type(e).__name__}: {e}")
+                await update.message.reply_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+
+        async def _send_long(update, text: str):
+            """Отправка длинных сообщений (>4096)"""
+            if not text:
+                text = "..."
+            try:
+                if len(text) <= 4096:
+                    await update.message.reply_text(text)
+                else:
+                    for i in range(0, len(text), 4096):
+                        chunk = text[i:i + 4096]
+                        await update.message.reply_text(chunk)
+            except Exception as e:
+                logger.error(f"TG send error: {type(e).__name__}: {e}")
 
         # ======== РЕГИСТРАЦИЯ ========
 
@@ -259,8 +361,8 @@ class TelegramRunner:
         self._app.add_handler(CommandHandler("buy", cmd_buy))
         self._app.add_handler(PreCheckoutQueryHandler(pre_checkout))
 
-        # команды через brain
-        for cmd in ["help", "prompt", "prompt_clear", "learn", "knowledge", "stats", "clear"]:
+        for cmd in ["help", "prompt", "prompt_clear", "learn",
+                     "knowledge", "stats", "clear"]:
             self._app.add_handler(CommandHandler(cmd, cmd_generic))
 
         self._app.add_handler(
@@ -296,16 +398,9 @@ class TelegramRunner:
                 if self._app.running:
                     await self._app.stop()
                 await self._app.shutdown()
+                logger.info(f"TG {self.bot_id}: clean shutdown")
         except Exception as e:
-            logger.error(f"TG shutdown {self.bot_id}: {e}")
-
-    async def _send_long(self, update, text: str):
-        """Отправка длинных сообщений (>4096)"""
-        if len(text) <= 4096:
-            await update.message.reply_text(text)
-        else:
-            for i in range(0, len(text), 4096):
-                await update.message.reply_text(text[i:i + 4096])
+            logger.error(f"TG shutdown {self.bot_id}: {type(e).__name__}: {e}")
 
 
 class BotInstance:
@@ -314,35 +409,21 @@ class BotInstance:
     def __init__(self, config: dict):
         self.config = config
         self.bot_id = config["bot_id"]
-
-        self.brain = Brain(
-            bot_id=self.bot_id,
-            api_key=config["api_key"],
-            model=config["model"],
-            system_prompt=config["system_prompt"],
-            max_history=config.get("max_history", 20),
-            free_messages=config.get("free_messages", 20),
-            rag_top_k=config.get("rag_top_k", 3),
-            provider=config.get("provider", "openrouter"),
-            custom_base_url=config.get("custom_base_url", ""),
-            tools_enabled=config.get("tools_enabled", True),
-            tool_permissions=config.get("tool_permissions"),
-            allowed_paths=config.get("allowed_paths"),
-            blocked_paths=config.get("blocked_paths"),
-            access_mode=config.get("access_mode", "sandbox"),
-            working_directory=config.get("working_directory", ""),
-            max_tool_rounds=config.get("max_tool_rounds", 15),
-        )
-
-        self.telegram = None
+        self.brain = _build_brain(config)
+        self.telegram: Optional[TelegramRunner] = None
 
     def start_telegram(self) -> bool:
-        if not self.config.get("bot_token"):
+        token = self.config.get("bot_token", "").strip()
+        if not token:
             logger.warning(f"Bot {self.bot_id}: no telegram token")
             return False
 
         if self.telegram and self.telegram.is_running:
             return True
+
+        # остановить предыдущий если завис
+        if self.telegram:
+            self.telegram.stop()
 
         self.telegram = TelegramRunner(self.config, self.brain)
         self.telegram.start()
@@ -365,27 +446,15 @@ class BotInstance:
         new_base_url = config.get("custom_base_url", "")
 
         if (old_provider != new_provider or
-            old_key != new_key or
-            old_base_url != new_base_url):
-            self.brain = Brain(
-                bot_id=self.bot_id,
-                api_key=config["api_key"],
-                model=config["model"],
-                system_prompt=config["system_prompt"],
-                max_history=config.get("max_history", 20),
-                free_messages=config.get("free_messages", 20),
-                rag_top_k=config.get("rag_top_k", 3),
-                provider=config.get("provider", "openrouter"),
-                custom_base_url=config.get("custom_base_url", ""),
-                tools_enabled=config.get("tools_enabled", True),
-                tool_permissions=config.get("tool_permissions"),
-                allowed_paths=config.get("allowed_paths"),
-                blocked_paths=config.get("blocked_paths"),
-                access_mode=config.get("access_mode", "sandbox"),
-                working_directory=config.get("working_directory", ""),
-                max_tool_rounds=config.get("max_tool_rounds", 15),
-            )
-            logger.info(f"♻️ Bot {self.bot_id} provider changed")
+                old_key != new_key or
+                old_base_url != new_base_url):
+            self.brain = _build_brain(config)
+            logger.info(f"♻️ Bot {self.bot_id} provider changed: {old_provider} → {new_provider}")
+
+            # перезапускаем telegram с новым brain
+            if self.telegram and self.telegram.is_running:
+                self.stop_telegram()
+                self.start_telegram()
         else:
             self.brain.update_model(config["model"])
             self.brain.update_prompt(config["system_prompt"])
@@ -404,48 +473,65 @@ class Engine:
 
     def __init__(self):
         self.instances: Dict[str, BotInstance] = {}
+        self._lock = threading.Lock()
 
     def activate_bot(self, bot_id: str) -> bool:
-        if bot_id in self.instances:
-            return True
+        with self._lock:
+            if bot_id in self.instances:
+                return True
 
-        config = load_config(bot_id)
-        if not config:
-            logger.error(f"Config not found: {bot_id}")
-            return False
+            config = load_config(bot_id)
+            if not config:
+                logger.error(f"Config not found: {bot_id}")
+                return False
 
-        if not config.get("api_key"):
-            logger.error(f"Bot {bot_id}: no api_key")
-            return False
+            if not config.get("api_key"):
+                logger.error(f"Bot {bot_id}: no api_key")
+                return False
 
-        instance = BotInstance(config)
-        self.instances[bot_id] = instance
+            try:
+                instance = BotInstance(config)
+            except Exception as e:
+                logger.error(f"Failed to create bot {bot_id}: {type(e).__name__}: {e}")
+                return False
 
-        config["is_running"] = True
-        save_config(bot_id, config)
+            self.instances[bot_id] = instance
 
-        logger.info(f"🟢 Bot {bot_id} ({config['name']}) activated")
-        return True
-
-    def deactivate_bot(self, bot_id: str) -> bool:
-        if bot_id not in self.instances:
-            return False
-
-        self.instances[bot_id].stop_telegram()
-        del self.instances[bot_id]
-
-        config = load_config(bot_id)
-        if config:
-            config["is_running"] = False
+            config["is_running"] = True
             save_config(bot_id, config)
 
-        logger.info(f"🔴 Bot {bot_id} deactivated")
-        return True
+            logger.info(f"🟢 Bot {bot_id} ({config['name']}) activated")
+            return True
+
+    def deactivate_bot(self, bot_id: str) -> bool:
+        with self._lock:
+            if bot_id not in self.instances:
+                return False
+
+            try:
+                self.instances[bot_id].stop_telegram()
+            except Exception as e:
+                logger.error(f"Error stopping telegram {bot_id}: {e}")
+
+            del self.instances[bot_id]
+
+            config = load_config(bot_id)
+            if config:
+                config["is_running"] = False
+                save_config(bot_id, config)
+
+            logger.info(f"🔴 Bot {bot_id} deactivated")
+            return True
 
     def start_telegram(self, bot_id: str) -> bool:
+        with self._lock:
+            if bot_id not in self.instances:
+                pass  # выпадем из lock и активируем
+
         if bot_id not in self.instances:
             if not self.activate_bot(bot_id):
                 return False
+
         return self.instances[bot_id].start_telegram()
 
     def stop_telegram(self, bot_id: str) -> bool:
@@ -474,15 +560,21 @@ class Engine:
 
         if is_active:
             instance = self.instances[bot_id]
-            tg_running = instance.telegram is not None and instance.telegram.is_running
-            stats = instance.brain.get_stats()
+            tg_running = (
+                instance.telegram is not None
+                and instance.telegram.is_running
+            )
+            try:
+                stats = instance.brain.get_stats()
+            except Exception as e:
+                logger.error(f"Stats error {bot_id}: {e}")
 
         return {
             "bot_id": bot_id,
             "name": config["name"],
             "is_active": is_active,
             "telegram_connected": tg_running,
-            "has_token": bool(config.get("bot_token")),
+            "has_token": bool(config.get("bot_token", "").strip()),
             "model": config["model"],
             "provider": config.get("provider", "openrouter"),
             "stats": stats
@@ -490,20 +582,25 @@ class Engine:
 
     def get_all_statuses(self) -> list:
         bots = list_bots()
-        return [self.get_status(c["bot_id"]) for c in bots if self.get_status(c["bot_id"])]
+        result = []
+        for c in bots:
+            status = self.get_status(c["bot_id"])
+            if status:
+                result.append(status)
+        return result
 
     def start_all(self):
         for config in list_bots():
             if config.get("is_running", False):
                 self.activate_bot(config["bot_id"])
-                if config.get("bot_token") and config.get("enable_telegram", False):
+                if (config.get("bot_token", "").strip()
+                        and config.get("enable_telegram", False)):
                     self.start_telegram(config["bot_id"])
 
     def stop_all(self):
         for bot_id in list(self.instances.keys()):
             self.deactivate_bot(bot_id)
 
-    def get_brain(self, bot_id: str) -> Brain:
-        if bot_id in self.instances:
-            return self.instances[bot_id].brain
-        return None
+    def get_brain(self, bot_id: str) -> Optional[Brain]:
+        instance = self.instances.get(bot_id)
+        return instance.brain if instance else None

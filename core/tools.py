@@ -3,16 +3,16 @@
 Режимы доступа:
   - sandbox: только workspace папка (безопасно для чат-ботов)
   - full: весь ПК (для персональных ассистентов)
+  - project: папка проекта bot-factory
   - custom: указанные папки
 """
 
 import os
 import re
-import json
 import subprocess
 import logging
 from pathlib import Path
-from datetime import datetime
+from typing import List, Dict, Optional
 
 logger = logging.getLogger("tools")
 
@@ -20,6 +20,8 @@ ROOT_DIR = Path(__file__).parent.parent
 BOTS_DIR = ROOT_DIR / "bots"
 
 CODE_TIMEOUT = 30
+MAX_COMMAND_LENGTH = 10000
+MAX_COMMANDS_PER_BATCH = 50
 
 # ============================================================
 #  ПРАВА
@@ -31,14 +33,18 @@ DEFAULT_PERMISSIONS = {
     "delete_files": False,
     "network": False,
     "install_packages": False,
+    "user_can_add_prompt": False,
+    "user_can_add_knowledge": False,
+    "user_can_clear_history": True,
 }
 
 # ВСЕГДА заблокировано — даже в full режиме
 ALWAYS_BLOCKED = [
     'rm -rf /', 'rm -rf /*', 'mkfs', 'dd if=/dev/zero',
     'dd if=/dev/random', ':(){', 'shutdown', 'reboot',
-    'poweroff', 'init 0', 'init 6',
+    'poweroff', 'init 0', 'init 6', 'halt',
     'chmod -R 777 /', 'chown -R', '> /dev/sd',
+    'fork()', ':(){ :|:& };:',
 ]
 
 DELETE_COMMANDS = ['rm ', 'rmdir ', 'unlink ']
@@ -50,7 +56,7 @@ INSTALL_COMMANDS = ['pip ', 'pip3 ', 'apt ', 'apt-get ', 'yum ', 'npm ', 'yarn '
 #  ПАРСЕР КОМАНД
 # ============================================================
 
-def parse_commands(text: str) -> list:
+def parse_commands(text: str) -> List[str]:
     """
     Извлекает команды из текста.
     Форматы:
@@ -59,10 +65,16 @@ def parse_commands(text: str) -> list:
         ```
         $ ls -la
     """
+    if not text or not text.strip():
+        return []
+
     commands = []
 
     # блоки ```bash```
-    pattern = re.compile(r'```(?:bash|sh|shell|cmd|command|zsh)?\s*\n(.*?)```', re.DOTALL)
+    pattern = re.compile(
+        r'```(?:bash|sh|shell|cmd|command|zsh)?\s*\n(.*?)```',
+        re.DOTALL
+    )
     for match in pattern.finditer(text):
         block = match.group(1).strip()
         for line in block.split('\n'):
@@ -70,16 +82,20 @@ def parse_commands(text: str) -> list:
             if line and not line.startswith('#'):
                 if line.startswith('$ '):
                     line = line[2:]
-                commands.append(line)
+                if line:
+                    commands.append(line)
 
-    # строки с $
+    # строки с $ (fallback)
     if not commands:
         for line in text.split('\n'):
             line = line.strip()
             if line.startswith('$ '):
-                commands.append(line[2:])
+                cmd = line[2:].strip()
+                if cmd:
+                    commands.append(cmd)
 
-    return commands
+    # лимит
+    return commands[:MAX_COMMANDS_PER_BATCH]
 
 
 # ============================================================
@@ -100,45 +116,82 @@ class ToolExecutor:
                  allowed_paths: list = None, blocked_paths: list = None,
                  working_directory: str = ""):
         self.bot_id = bot_id
-        self.access_mode = access_mode
+
+        # валидация access_mode
+        valid_modes = {"sandbox", "full", "project", "custom"}
+        self.access_mode = access_mode if access_mode in valid_modes else "sandbox"
 
         # workspace — всегда существует
         self.workspace = BOTS_DIR / f"bot_{bot_id}" / "workspace"
         self.workspace.mkdir(parents=True, exist_ok=True)
 
         # рабочая директория зависит от режима
-        if working_directory and Path(working_directory).exists():
-            self.cwd = Path(working_directory)
-        elif access_mode == "full":
-            self.cwd = Path.home()
-        elif access_mode == "project":
-            self.cwd = ROOT_DIR
+        if working_directory:
+            wd = Path(working_directory)
+            if wd.exists() and wd.is_dir():
+                self.cwd = wd
+            else:
+                logger.warning(
+                    f"Working directory not found: {working_directory}, "
+                    f"using default for {self.access_mode}"
+                )
+                self.cwd = self._default_cwd()
         else:
-            self.cwd = self.workspace
+            self.cwd = self._default_cwd()
 
+        # права
         self.permissions = {**DEFAULT_PERMISSIONS}
-        if permissions:
+        if isinstance(permissions, dict):
             self.permissions.update(permissions)
 
-        # дополнительные разрешённые папки
-        self.allowed_paths = []
+        # разрешённые папки
+        self.allowed_paths: List[str] = []
         if allowed_paths:
             for p in allowed_paths:
-                rp = Path(p).resolve()
-                if rp.exists():
-                    self.allowed_paths.append(str(rp))
+                try:
+                    rp = Path(p).resolve()
+                    if rp.exists():
+                        self.allowed_paths.append(str(rp))
+                except (OSError, ValueError) as e:
+                    logger.warning(f"Invalid allowed path {p}: {e}")
 
-        self.blocked_paths = []
+        # заблокированные папки
+        self.blocked_paths: List[str] = []
         if blocked_paths:
-            self.blocked_paths = blocked_paths
+            self.blocked_paths = [
+                str(p) for p in blocked_paths if isinstance(p, str)
+            ]
 
-    def check_command(self, command: str) -> str:
+    def _default_cwd(self) -> Path:
+        """Возвращает дефолтную рабочую директорию по режиму"""
+        if self.access_mode == "full":
+            return Path.home()
+        elif self.access_mode == "project":
+            return ROOT_DIR
+        else:
+            return self.workspace
+
+    def check_command(self, command: str) -> Optional[str]:
         """Проверяет безопасность. Возвращает ошибку или None"""
+        if not command or not command.strip():
+            return "🚫 Пустая команда"
+
+        if len(command) > MAX_COMMAND_LENGTH:
+            return f"🚫 Команда слишком длинная (макс {MAX_COMMAND_LENGTH})"
+
         cmd_lower = command.lower().strip()
 
+        # ВСЕГДА заблокировано
         for blocked in ALWAYS_BLOCKED:
             if blocked in cmd_lower:
-                return f"🚫 Заблокировано: опасная операция"
+                logger.warning(
+                    f"BLOCKED dangerous command from bot {self.bot_id}: {command[:100]}"
+                )
+                return "🚫 Заблокировано: опасная операция"
+
+        # sudo с опасными командами
+        if cmd_lower.startswith('sudo') and any(b in cmd_lower for b in ALWAYS_BLOCKED):
+            return "🚫 Заблокировано: опасная операция"
 
         if not self.permissions.get("execute_commands", True):
             return "🚫 Выполнение команд отключено"
@@ -164,23 +217,26 @@ class ToolExecutor:
                 if cmd_lower.startswith(i) or f'sudo {i}' in cmd_lower:
                     return "🚫 Установка пакетов отключена"
 
-        # проверяем заблокированные пути
+        # заблокированные пути
         for bp in self.blocked_paths:
             if bp in command:
                 return f"🚫 Доступ к {bp} запрещён"
 
-        # в sandbox режиме блокируем cd за пределы workspace
+        # sandbox ограничения
         if self.access_mode == "sandbox":
-            if 'cd /' in cmd_lower or 'cd ~' in cmd_lower or 'cd ..' in cmd_lower:
+            if 'cd /' in cmd_lower or 'cd ~' in cmd_lower:
+                return "🚫 В sandbox режиме нельзя выходить за рабочую папку"
+            # разрешаем cd .. только если не выходим за workspace
+            if 'cd ..' in cmd_lower:
                 return "🚫 В sandbox режиме нельзя выходить за рабочую папку"
 
         return None
 
-    def execute_command(self, command: str) -> dict:
+    def execute_command(self, command: str) -> Dict:
         """Выполняет одну команду"""
         error = self.check_command(command)
         if error:
-            return {"command": command, "error": error}
+            return {"command": command, "error": error, "exit_code": -1}
 
         try:
             env = {**os.environ, 'LANG': 'en_US.UTF-8', 'LC_ALL': 'en_US.UTF-8'}
@@ -189,63 +245,121 @@ class ToolExecutor:
             if self.access_mode == "sandbox":
                 env['HOME'] = str(self.workspace)
 
+            # проверяем что cwd существует
+            cwd = str(self.cwd)
+            if not Path(cwd).exists():
+                cwd = str(self.workspace)
+
             result = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=CODE_TIMEOUT,
-                cwd=str(self.cwd),
+                cwd=cwd,
                 env=env,
             )
+
+            stdout = result.stdout[:15000] if result.stdout else ""
+            stderr = result.stderr[:5000] if result.stderr else ""
 
             return {
                 "command": command,
                 "exit_code": result.returncode,
-                "stdout": result.stdout[:15000] if result.stdout else "",
-                "stderr": result.stderr[:5000] if result.stderr else "",
+                "stdout": stdout,
+                "stderr": stderr,
             }
 
         except subprocess.TimeoutExpired:
-            return {"command": command, "error": f"Таймаут ({CODE_TIMEOUT}с)"}
+            logger.warning(f"Command timeout {self.bot_id}: {command[:100]}")
+            return {
+                "command": command,
+                "error": f"⏱️ Таймаут ({CODE_TIMEOUT}с)",
+                "exit_code": -1
+            }
+        except OSError as e:
+            logger.error(f"OS error executing command {self.bot_id}: {e}")
+            return {"command": command, "error": f"Ошибка ОС: {e}", "exit_code": -1}
         except Exception as e:
-            return {"command": command, "error": str(e)}
+            logger.error(
+                f"Command error {self.bot_id}: {type(e).__name__}: {e}"
+            )
+            return {
+                "command": command,
+                "error": f"Ошибка: {str(e)[:200]}",
+                "exit_code": -1
+            }
 
-    def execute_commands(self, commands: list) -> list:
+    def execute_commands(self, commands: List[str]) -> List[Dict]:
         """Выполняет список команд"""
+        if not commands:
+            return []
+
+        # лимит
+        commands = commands[:MAX_COMMANDS_PER_BATCH]
+
         results = []
         for cmd in commands:
             result = self.execute_command(cmd)
             results.append(result)
-            logger.info(f"🔧 {self.bot_id}: $ {cmd} → exit={result.get('exit_code', '?')}")
+            exit_code = result.get('exit_code', '?')
+            has_error = result.get('error', '')
+            if has_error:
+                logger.info(f"🔧 {self.bot_id}: $ {cmd[:80]} → ERROR: {has_error[:50]}")
+            else:
+                logger.info(f"🔧 {self.bot_id}: $ {cmd[:80]} → exit={exit_code}")
+
         return results
 
-    def format_results(self, results: list) -> str:
-        """Форматирует для модели"""
+    def format_results(self, results: List[Dict]) -> str:
+        """Форматирует результаты для AI модели"""
+        if not results:
+            return "(нет результатов)"
+
         parts = []
         for r in results:
             cmd = r.get("command", "?")
             if r.get("error"):
                 parts.append(f"$ {cmd}\n❌ {r['error']}")
             else:
-                output = ""
+                output_parts = []
                 if r.get("stdout"):
-                    output += r["stdout"]
+                    output_parts.append(r["stdout"])
                 if r.get("stderr"):
-                    output += f"\nSTDERR: {r['stderr']}"
-                if not output.strip():
+                    output_parts.append(f"STDERR: {r['stderr']}")
+
+                output = "\n".join(output_parts).strip()
+                if not output:
                     output = "(ok, нет вывода)"
-                parts.append(f"$ {cmd}\n{output.strip()}")
+
+                exit_code = r.get("exit_code", 0)
+                if exit_code != 0:
+                    output += f"\n[exit code: {exit_code}]"
+
+                parts.append(f"$ {cmd}\n{output}")
+
         return "\n\n".join(parts)
 
-    def get_info(self) -> dict:
-        file_count = sum(1 for _ in self.workspace.rglob('*') if _.is_file())
-        ws_size = sum(f.stat().st_size for f in self.workspace.rglob('*') if f.is_file())
+    def get_info(self) -> Dict:
+        """Информация о workspace"""
+        try:
+            file_count = sum(
+                1 for _ in self.workspace.rglob('*') if _.is_file()
+            )
+            ws_size = sum(
+                f.stat().st_size for f in self.workspace.rglob('*')
+                if f.is_file()
+            )
+        except (OSError, PermissionError) as e:
+            logger.warning(f"Workspace scan error {self.bot_id}: {e}")
+            file_count = 0
+            ws_size = 0
+
         return {
             "access_mode": self.access_mode,
             "working_directory": str(self.cwd),
             "workspace": str(self.workspace),
             "files": file_count,
             "size_bytes": ws_size,
-            "permissions": self.permissions,
+            "permissions": dict(self.permissions),
         }

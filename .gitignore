@@ -17,3 +17,10 @@ bots/
 # OS
 .DS_Store
 Thumbs.db
+
+# Секреты
+.env
+*.env
+
+# Логи
+*.log
