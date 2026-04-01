@@ -1,5 +1,6 @@
 /**
- * Bot Factory v2.0 — логика панели управления
+ * Bot Factory v2.1 — панель управления
+ * Фичи: searchable модели, избранное, локальные модели (Ollama)
  */
 
 // ====================================================
@@ -25,126 +26,261 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function api(method, url, body = null) {
     const options = {
-        method: method,
+        method,
         headers: { 'Content-Type': 'application/json' }
     };
     if (body) options.body = JSON.stringify(body);
-
     const response = await fetch(url, options);
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Ошибка сервера');
     return data;
 }
 
-// тихий API — не показывает ошибки (для фоновых запросов)
 async function apiSilent(method, url, body = null) {
-    try {
-        return await api(method, url, body);
-    } catch (e) {
-        return null;
-    }
+    try { return await api(method, url, body); }
+    catch (e) { return null; }
 }
 
 // ====================================================
-// МОДЕЛИ — searchable dropdown + избранное
+// МОДЕЛИ — searchable dropdown + избранное + локальные
 // ====================================================
 
 const CATEGORY_ORDER = [
-    { key: '_favorites', label: '⭐ Избранное' },
-    { key: 'uncensored', label: '🔥 Без цензуры' },
-    { key: 'psychology', label: '💬 Собеседник / Универсальная' },
-    { key: 'code',       label: '💻 Код / Программирование' },
-    { key: 'creative',   label: '🎭 Ролеплей / Креатив / Истории' },
-    { key: 'analytics',  label: '📊 Аналитика / Документы / RAG' },
-    { key: 'reasoning',  label: '🧮 Логика / Математика / Reasoning' },
+    { key: '_favorites',  label: '⭐ Избранное' },
+    { key: '_local',      label: '🖥️ Локальные (Ollama)' },
+    { key: 'uncensored',  label: '🔥 Без цензуры' },
+    { key: 'psychology',  label: '💬 Собеседник / Универсальная' },
+    { key: 'code',        label: '💻 Код / Программирование' },
+    { key: 'creative',    label: '🎭 Ролеплей / Креатив / Истории' },
+    { key: 'analytics',   label: '📊 Аналитика / Документы / RAG' },
+    { key: 'reasoning',   label: '🧮 Логика / Математика / Reasoning' },
 ];
+
+// каталог загружается с сервера динамически
+let ollamaCatalog = [];
+let ollamaCatalogLoading = false;
+let ollamaCatalogTimeout = null;
 
 let modelSearchHighlight = -1;
 let modelSearchFiltered = [];
 let modelSearchActivePrefix = null;
 let favoriteModels = new Set();
+let localModels = [];        // скачанные модели Ollama
+let ollamaAvailable = null;  // null = не проверяли, true/false
+let ollamaPulling = {};       // { modelId: progress% }
+let hfSearchResults = [];    // результаты поиска HuggingFace
+let hfSearchLoading = false;
+let hfSearchQuery = '';
+let hfSearchTimeout = null;
 
-// загрузка избранного из localStorage
 function loadFavorites() {
     try {
         const saved = localStorage.getItem('bf_favorite_models');
         if (saved) {
             const arr = JSON.parse(saved);
-            if (Array.isArray(arr)) {
-                favoriteModels = new Set(arr);
-            }
+            if (Array.isArray(arr)) favoriteModels = new Set(arr);
         }
-    } catch (e) {
-        favoriteModels = new Set();
-    }
+    } catch (e) { favoriteModels = new Set(); }
 }
 
 function saveFavorites() {
-    try {
-        localStorage.setItem('bf_favorite_models', JSON.stringify([...favoriteModels]));
-    } catch (e) {}
+    try { localStorage.setItem('bf_favorite_models', JSON.stringify([...favoriteModels])); }
+    catch (e) {}
 }
 
 function toggleFavorite(modelId) {
-    if (favoriteModels.has(modelId)) {
-        favoriteModels.delete(modelId);
-    } else {
-        favoriteModels.add(modelId);
-    }
+    if (favoriteModels.has(modelId)) favoriteModels.delete(modelId);
+    else favoriteModels.add(modelId);
     saveFavorites();
-
-    // перерисовываем dropdown
     if (modelSearchActivePrefix) {
         const input = document.getElementById(`${modelSearchActivePrefix}ModelSearch`);
         const query = (input.value || '').toLowerCase().trim();
         renderModelDropdown(modelSearchActivePrefix, query);
-
-        // возвращаем фокус на инпут
-        requestAnimationFrame(() => input.focus());
     }
 }
 
 async function loadModels() {
     loadFavorites();
-    try {
-        models = await api('GET', '/api/models');
-    } catch (e) {
-        models = [{
-            id: 'mistralai/mistral-nemo', name: 'Mistral Nemo',
-            category: 'psychology', rating: 6, price: '$0.03→$0.03',
-            censored: false, prompt_price: 0.03
-        }];
+    try { models = await api('GET', '/api/models'); }
+    catch (e) {
+        models = [{ id: 'mistralai/mistral-nemo', name: 'Mistral Nemo',
+                     category: 'psychology', rating: 6, price: '$0.03→$0.03',
+                     censored: false, prompt_price: 0.03 }];
     }
     models.sort((a, b) => {
         if ((b.rating || 0) !== (a.rating || 0)) return (b.rating || 0) - (a.rating || 0);
         return (a.prompt_price || 0) - (b.prompt_price || 0);
     });
+    // проверяем Ollama в фоне
+    checkOllama();
 }
 
+// ====================================================
+// OLLAMA — локальные модели
+// ====================================================
+
+async function checkOllama() {
+    try {
+        const data = await apiSilent('GET', '/api/local/status');
+        if (data && data.available) {
+            ollamaAvailable = true;
+            localModels = data.models || [];
+        } else {
+            ollamaAvailable = false;
+            localModels = [];
+        }
+    } catch (e) {
+        ollamaAvailable = false;
+        localModels = [];
+    }
+}
+
+function isLocalModelInstalled(modelId) {
+    return localModels.some(m =>
+        m.name === modelId ||
+        m.name === modelId.split(':')[0] ||
+        m.name.startsWith(modelId)
+    );
+}
+
+async function pullLocalModel(modelId) {
+    if (ollamaPulling[modelId]) return;
+    ollamaPulling[modelId] = 0;
+    toast(`⬇️ Скачивание ${modelId}...`, 'info');
+
+    // перерисовываем
+    if (modelSearchActivePrefix) {
+        const input = document.getElementById(`${modelSearchActivePrefix}ModelSearch`);
+        renderModelDropdown(modelSearchActivePrefix, (input.value || '').toLowerCase().trim());
+    }
+
+    try {
+        const result = await api('POST', '/api/local/pull', { model: modelId });
+        if (result.ok) {
+            toast(`✅ ${modelId} скачана!`, 'success');
+            await checkOllama();
+        } else {
+            toast(`❌ Ошибка: ${result.error || 'unknown'}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ Ошибка скачивания: ${e.message}`, 'error');
+    }
+
+    delete ollamaPulling[modelId];
+    if (modelSearchActivePrefix) {
+        const input = document.getElementById(`${modelSearchActivePrefix}ModelSearch`);
+        renderModelDropdown(modelSearchActivePrefix, (input.value || '').toLowerCase().trim());
+    }
+}
+
+async function deleteLocalModel(modelId) {
+    if (!confirm(`Удалить локальную модель ${modelId}?`)) return;
+    try {
+        const result = await api('DELETE', '/api/local/model', { model: modelId });
+        if (result.ok) {
+            toast(`🗑️ ${modelId} удалена`, 'info');
+            await checkOllama();
+        } else {
+            toast(`❌ ${result.error}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ ${e.message}`, 'error');
+    }
+    if (modelSearchActivePrefix) {
+        const input = document.getElementById(`${modelSearchActivePrefix}ModelSearch`);
+        renderModelDropdown(modelSearchActivePrefix, (input.value || '').toLowerCase().trim());
+    }
+}
+
+// ====================================================
+// DROPDOWN — открытие/закрытие/фильтр
+// ====================================================
+
+let dropdownCloseTimer = null;
+
 function modelSearchOpen(prefix) {
+    if (dropdownCloseTimer) { clearTimeout(dropdownCloseTimer); dropdownCloseTimer = null; }
     modelSearchActivePrefix = prefix;
     modelSearchHighlight = -1;
     modelSearchFilter(prefix);
-    const dd = document.getElementById(`${prefix}ModelDropdown`);
-    dd.classList.add('open');
+    document.getElementById(`${prefix}ModelDropdown`).classList.add('open');
 }
 
 function modelSearchClose(prefix) {
-    const dd = document.getElementById(`${prefix}ModelDropdown`);
-    dd.classList.remove('open');
+    document.getElementById(`${prefix}ModelDropdown`).classList.remove('open');
     modelSearchActivePrefix = null;
+}
+
+function modelSearchCloseDelayed(prefix) {
+    dropdownCloseTimer = setTimeout(() => modelSearchClose(prefix), 300);
+}
+
+function modelSearchCancelClose() {
+    if (dropdownCloseTimer) { clearTimeout(dropdownCloseTimer); dropdownCloseTimer = null; }
 }
 
 function modelSearchFilter(prefix) {
     const input = document.getElementById(`${prefix}ModelSearch`);
-    const dd = document.getElementById(`${prefix}ModelDropdown`);
     const query = (input.value || '').toLowerCase().trim();
 
+    // облачные модели
+    let allModels = [...models];
+
+    // добавляем скачанные локальные
+    if (ollamaAvailable) {
+        localModels.forEach(lm => {
+            const name = lm.name || lm.model;
+            if (!allModels.find(m => m.id === name)) {
+                allModels.push({
+                    id: name, name: name,
+                    category: '_local', rating: 5,
+                    price: 'бесплатно', censored: false,
+                    prompt_price: 0, _local: true,
+                    _localInfo: { size: lm.size ? (lm.size/1e9).toFixed(1)+'GB' : '?', ram: '?', vram: '?' }
+                });
+            }
+        });
+    }
+
+    // добавляем результаты поиска из каталога Ollama
+    if (ollamaAvailable || ollamaAvailable === null) {
+        ollamaCatalog.forEach(cat => {
+            // tags — это объект { tag: {size, ram, vram, ctx} }
+            const tagEntries = cat.tags ? Object.entries(cat.tags) : [];
+            tagEntries.forEach(([tag, info]) => {
+                const modelId = tag === 'latest' ? cat.model : `${cat.model}:${tag}`;
+                if (!allModels.find(m => m.id === modelId)) {
+                    const sizeStr = formatSizeCompact(info.size);
+                    const ramStr = formatSizeCompact(info.ram);
+                    const vramStr = formatSizeCompact(info.vram);
+                    allModels.push({
+                        id: modelId,
+                        name: `${cat.model}:${tag}`,
+                        category: '_local',
+                        rating: 5,
+                        price: 'бесплатно',
+                        censored: false,
+                        prompt_price: 0,
+                        _local: true,
+                        _localInfo: {
+                            size: sizeStr,
+                            ram: ramStr,
+                            vram: vramStr,
+                            ctx: info.ctx || 0,
+                            use: `${cat.total_tags} вариантов`
+                        },
+                        _catalogModel: cat.model,
+                    });
+                }
+            });
+        });
+    }
+
     if (query.length === 0) {
-        modelSearchFiltered = [...models];
+        modelSearchFiltered = allModels;
     } else {
         const terms = query.split(/\s+/);
-        modelSearchFiltered = models.filter(m => {
+        modelSearchFiltered = allModels.filter(m => {
             const haystack = `${m.id} ${m.name} ${m.category || ''} ${m.description || ''}`.toLowerCase();
             return terms.every(t => haystack.includes(t));
         });
@@ -152,28 +288,71 @@ function modelSearchFilter(prefix) {
 
     modelSearchHighlight = -1;
     renderModelDropdown(prefix, query);
+
+    // запускаем поиск по каталогу Ollama с debounce
+    if (query.length >= 2) {
+        if (ollamaCatalogTimeout) clearTimeout(ollamaCatalogTimeout);
+        ollamaCatalogTimeout = setTimeout(() => searchOllamaCatalog(prefix, query), 300);
+    } else if (query.length === 0) {
+        // при пустом запросе — загружаем популярные
+        if (ollamaCatalog.length === 0) {
+            searchOllamaCatalog(prefix, '');
+        }
+    }
+}
+
+async function searchOllamaCatalog(prefix, query) {
+    if (ollamaCatalogLoading) return;
+    ollamaCatalogLoading = true;
+
+    try {
+        const url = query
+            ? `/api/local/catalog?q=${encodeURIComponent(query)}&limit=30`
+            : `/api/local/catalog?limit=20`;
+        const data = await apiSilent('GET', url);
+        if (data && data.models) {
+            ollamaCatalog = data.models;
+            // перерисовываем с новыми данными
+            modelSearchFilter(prefix);
+        }
+    } catch (e) {
+        console.error('Ollama catalog search error:', e);
+    }
+
+    ollamaCatalogLoading = false;
+}
+
+function formatSizeCompact(gb) {
+    if (!gb || gb <= 0) return '?';
+    if (gb < 1) return Math.round(gb * 1024) + 'MB';
+    return gb.toFixed(1) + 'GB';
 }
 
 function renderModelDropdown(prefix, query) {
     const dd = document.getElementById(`${prefix}ModelDropdown`);
 
     if (modelSearchFiltered.length === 0) {
-        dd.innerHTML = `<div class="model-search-empty">Ничего не найдено для «${escapeHtml(query)}»</div>`;
+        dd.innerHTML = `<div class="model-search-empty">
+            Ничего не найдено для «${escapeHtml(query)}»
+            ${!ollamaAvailable ? '<br><br><span style="color:#f0883e;">💡 Установите <a href="https://ollama.com" target="_blank" style="color:#646cff;">Ollama</a> для локальных моделей</span>' : ''}
+        </div>`;
         dd.classList.add('open');
         return;
     }
 
-    // группируем: сначала избранные, потом по категориям
     const grouped = {};
 
     // избранные
     const favModels = modelSearchFiltered.filter(m => favoriteModels.has(m.id));
-    if (favModels.length > 0) {
-        grouped['_favorites'] = favModels;
-    }
+    if (favModels.length > 0) grouped['_favorites'] = favModels;
 
-    // остальные по категориям
+    // локальные
+    const localCatalogModels = modelSearchFiltered.filter(m => m._local || m.category === '_local');
+    if (localCatalogModels.length > 0) grouped['_local'] = localCatalogModels;
+
+    // остальные
     modelSearchFiltered.forEach(m => {
+        if (m._local || m.category === '_local') return;
         const cat = m.category || 'psychology';
         if (!grouped[cat]) grouped[cat] = [];
         grouped[cat].push(m);
@@ -182,12 +361,30 @@ function renderModelDropdown(prefix, query) {
     let html = '';
     let globalIdx = 0;
 
+    // Ollama статус-бар
+    if (ollamaAvailable === false && !query) {
+        html += `<div style="padding:10px 14px; background:#1a1508; border-bottom:1px solid #332a10; font-size:12px;">
+            <span style="color:#f0883e;">🖥️ Ollama не найдена</span> ·
+            <a href="https://ollama.com" target="_blank" style="color:#646cff;">Установить →</a>
+            <span style="color:#555; margin-left:8px;">curl -fsSL https://ollama.com/install.sh | sh</span>
+        </div>`;
+    } else if (ollamaAvailable === true && !query) {
+        html += `<div style="padding:6px 14px; background:#0a1a0a; border-bottom:1px solid #1a331a; font-size:11px; color:#3fb950;">
+            🖥️ Ollama ✅ · ${localModels.length} моделей скачано
+        </div>`;
+    }
+
     CATEGORY_ORDER.forEach(cat => {
         const items = grouped[cat.key];
         if (!items || items.length === 0) return;
 
         const isFav = cat.key === '_favorites';
-        html += `<div class="model-search-category${isFav ? ' favorites' : ''}">${cat.label} (${items.length})</div>`;
+        const isLocal = cat.key === '_local';
+        let catClass = '';
+        if (isFav) catClass = ' favorites';
+        else if (isLocal) catClass = ' local-cat';
+
+        html += `<div class="model-search-category${catClass}">${cat.label} (${items.length})</div>`;
 
         items.forEach(model => {
             const highlighted = globalIdx === modelSearchHighlight ? ' highlighted' : '';
@@ -198,30 +395,148 @@ function renderModelDropdown(prefix, query) {
             const starClass = isFavorite ? ' active' : '';
             const starIcon = isFavorite ? '⭐' : '☆';
 
-            html += `
-                <div class="model-search-item${highlighted}"
-                     data-idx="${globalIdx}"
-                     data-model-id="${escapeAttr(model.id)}"
-                     onmouseenter="modelSearchHighlight=${globalIdx}; highlightModelItem('${prefix}')">
-                    <button class="model-search-fav-btn${starClass}"
-                            data-fav-id="${escapeAttr(model.id)}"
-                            title="${isFavorite ? 'Убрать из избранного' : 'В избранное'}">${starIcon}</button>
-                    <div class="model-search-item-content">
-                        <div class="model-search-item-name">${name}${censor}</div>
-                        <div class="model-search-item-meta">
-                            <span style="color:#888;">${id}</span>
-                            <span class="price" style="margin-left:8px;">${model.price || ''}</span>
+            // локальная модель — другой рендер
+            if (model._local) {
+                const lm = model._localInfo || {};
+                const installed = isLocalModelInstalled(model.id);
+                const pulling = ollamaPulling[model.id] !== undefined;
+
+                let actionHtml = '';
+                if (pulling) {
+                    actionHtml = `<span style="color:#f0883e; font-size:11px;">⏳ Скачивание...</span>`;
+                } else if (installed) {
+                    actionHtml = `<span style="color:#3fb950; font-size:11px;">✅ Скачана</span>
+                        <button class="btn-local-action delete" data-local-delete="${escapeAttr(model.id)}" title="Удалить">🗑️</button>`;
+                } else {
+                    actionHtml = `<button class="btn-local-action download" data-local-pull="${escapeAttr(model.id)}" title="Скачать">⬇️ ${lm.size || ''}</button>`;
+                }
+
+                html += `
+                    <div class="model-search-item${highlighted}"
+                         data-idx="${globalIdx}"
+                         data-model-id="${escapeAttr(model.id)}"
+                         onmouseenter="modelSearchHighlight=${globalIdx}; highlightModelItem('${prefix}')">
+                        <button class="model-search-fav-btn${starClass}"
+                                data-fav-id="${escapeAttr(model.id)}"
+                                title="${isFavorite ? 'Убрать из избранного' : 'В избранное'}">${starIcon}</button>
+                        <div class="model-search-item-content">
+                            <div class="model-search-item-name">${name} <span style="color:#555; font-size:11px;">🖥️</span></div>
+                            <div class="model-search-item-meta">
+                                <span style="color:#3fb950;">бесплатно</span>
+                                <span style="color:#666; margin-left:6px;">RAM ${lm.ram || '?'} · VRAM ${lm.vram || '?'}</span>
+                                ${lm.use ? `<br><span style="color:#888;">${escapeHtml(lm.use)}</span>` : ''}
+                            </div>
                         </div>
-                    </div>
-                </div>`;
+                        <div style="flex-shrink:0; display:flex; align-items:center; gap:6px;">
+                            ${actionHtml}
+                        </div>
+                    </div>`;
+            } else {
+                // облачная модель
+                html += `
+                    <div class="model-search-item${highlighted}"
+                         data-idx="${globalIdx}"
+                         data-model-id="${escapeAttr(model.id)}"
+                         onmouseenter="modelSearchHighlight=${globalIdx}; highlightModelItem('${prefix}')">
+                        <button class="model-search-fav-btn${starClass}"
+                                data-fav-id="${escapeAttr(model.id)}"
+                                title="${isFavorite ? 'Убрать из избранного' : 'В избранное'}">${starIcon}</button>
+                        <div class="model-search-item-content">
+                            <div class="model-search-item-name">${name}${censor}</div>
+                            <div class="model-search-item-meta">
+                                <span style="color:#888;">${id}</span>
+                                <span class="price" style="margin-left:8px;">${model.price || ''}</span>
+                            </div>
+                        </div>
+                    </div>`;
+            }
             globalIdx++;
         });
     });
 
-    html += `<div class="model-search-count">${modelSearchFiltered.length} из ${models.length} моделей · ⭐ ${favoriteModels.size} в избранном</div>`;
+    // HuggingFace результаты
+    if (hfSearchResults.length > 0) {
+        html += `<div class="model-search-category local-cat">🤗 HuggingFace GGUF (${hfSearchResults.length})</div>`;
+        hfSearchResults.forEach(hf => {
+            const highlighted = globalIdx === modelSearchHighlight ? ' highlighted' : '';
+            const installed = isLocalModelInstalled(hf.ollama_id);
+            const pulling = ollamaPulling[hf.ollama_id] !== undefined;
+            const uncensor = hf.uncensored ? ' 🔓🔥' : '';
+            const dlk = hf.downloads > 1000 ? Math.round(hf.downloads/1000)+'k' : hf.downloads;
+
+            let actionHtml = '';
+            if (pulling) {
+                actionHtml = `<span style="color:#f0883e; font-size:11px;">⏳ Скачивание...</span>`;
+            } else if (installed) {
+                actionHtml = `<span style="color:#3fb950; font-size:11px;">✅ Скачана</span>
+                    <button class="btn-local-action delete" data-local-delete="${escapeAttr(hf.ollama_id)}" title="Удалить">🗑️</button>`;
+            } else {
+                actionHtml = `<button class="btn-local-action download" data-local-pull="${escapeAttr(hf.ollama_id)}" title="Скачать через Ollama">⬇️ ${hf.size_hint || 'GGUF'}</button>`;
+            }
+
+            html += `
+                <div class="model-search-item${highlighted}"
+                     data-idx="${globalIdx}"
+                     data-model-id="${escapeAttr(hf.ollama_id)}"
+                     onmouseenter="modelSearchHighlight=${globalIdx}; highlightModelItem('${prefix}')">
+                    <div class="model-search-item-content">
+                        <div class="model-search-item-name">${escapeHtml(hf.name)}${uncensor} <span style="color:#555; font-size:11px;">🤗</span></div>
+                        <div class="model-search-item-meta">
+                            <span style="color:#3fb950;">бесплатно</span>
+                            <span style="color:#666; margin-left:6px;">${hf.size_hint || '?'} · ⬇${dlk}</span>
+                        </div>
+                    </div>
+                    <div style="flex-shrink:0; display:flex; align-items:center; gap:6px;">
+                        ${actionHtml}
+                    </div>
+                </div>`;
+            globalIdx++;
+            // добавляем в filtered для навигации
+            modelSearchFiltered.push({ id: hf.ollama_id, name: hf.name, _local: true, _localInfo: { size: hf.size_hint, ram: '?', vram: '?', use: 'HuggingFace GGUF' } });
+        });
+    }
+
+    // кнопка поиска HF
+    if (query && query.length >= 2) {
+        if (hfSearchLoading) {
+            html += `<div class="model-search-count">⏳ Поиск на HuggingFace...</div>`;
+        } else {
+            html += `<div class="model-search-count" style="cursor:pointer; color:#58a6ff;" onclick="searchHuggingFace('${prefix}', '${escapeAttr(query)}')">🤗 Искать «${escapeHtml(query)}» на HuggingFace →</div>`;
+        }
+    }
+
+    html += `<div class="model-search-count">${modelSearchFiltered.length} моделей · ⭐ ${favoriteModels.size} избранных${ollamaAvailable ? ` · 🖥️ ${localModels.length} локальных` : ''}</div>`;
 
     dd.innerHTML = html;
     dd.classList.add('open');
+}
+
+async function searchHuggingFace(prefix, query) {
+    if (hfSearchLoading || !query || query.length < 2) return;
+    hfSearchLoading = true;
+    hfSearchQuery = query;
+
+    // показываем "загрузка..." — перерисовываем dropdown
+    renderModelDropdown(prefix);
+
+    try {
+        const resp = await fetch(`/api/hf/search?q=${encodeURIComponent(query)}&limit=15`);
+        const data = await resp.json();
+
+        if (data.models) {
+            const catalogIds = new Set(ollamaCatalog.flatMap(c => Object.keys(c.tags || {}).map(t => t === 'latest' ? c.model : `${c.model}:${t}`)));
+            hfSearchResults = data.models.filter(m => !catalogIds.has(m.ollama_id));
+        } else {
+            hfSearchResults = [];
+        }
+    } catch (e) {
+        console.error('HF search error:', e);
+        hfSearchResults = [];
+    }
+
+    hfSearchLoading = false;
+    // перерисовываем с результатами
+    renderModelDropdown(prefix);
 }
 
 function highlightMatch(text, query) {
@@ -236,16 +551,29 @@ function highlightMatch(text, query) {
     return result;
 }
 
-function escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function escapeAttr(str) {
-    return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
-}
+function escapeRegex(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function escapeAttr(str) { return str.replace(/'/g, "\\'").replace(/"/g, '\\"'); }
 
 function modelSearchSelect(prefix, modelId) {
-    const model = models.find(m => m.id === modelId);
+    const allModels = [...models];
+    // каталог Ollama — берём из результатов поиска
+    ollamaCatalog.forEach(cat => {
+        const tagEntries = cat.tags ? Object.entries(cat.tags) : [];
+        tagEntries.forEach(([tag, info]) => {
+            const modelId = tag === 'latest' ? cat.model : `${cat.model}:${tag}`;
+            if (!allModels.find(m => m.id === modelId)) {
+                allModels.push({ id: modelId, name: `${cat.model}:${tag}`, price: 'бесплатно', censored: false, _local: true });
+            }
+        });
+    });
+    localModels.forEach(lm => {
+        const name = lm.name || lm.model;
+        if (!allModels.find(m => m.id === name)) {
+            allModels.push({ id: name, name: name, price: 'бесплатно', censored: false, _local: true });
+        }
+    });
+
+    const model = allModels.find(m => m.id === modelId);
     if (!model) return;
 
     document.getElementById(`${prefix}ModelValue`).value = modelId;
@@ -253,9 +581,19 @@ function modelSearchSelect(prefix, modelId) {
 
     const censor = model.censored ? '' : ' 🔓';
     const favStar = favoriteModels.has(modelId) ? '⭐ ' : '';
+    const localTag = model._local ? ' 🖥️' : '';
     document.getElementById(`${prefix}ModelSelected`).innerHTML =
-        `✅ ${favStar}<strong>${escapeHtml(model.name)}</strong> · ${model.price || ''}${censor}` +
+        `✅ ${favStar}<strong>${escapeHtml(model.name)}</strong> · ${model.price || ''}${censor}${localTag}` +
         `<br><span style="color:#888; font-size:11px;">${escapeHtml(model.id)}</span>`;
+
+    // если локальная модель — автоматически ставим провайдер local
+    if (model._local) {
+        const providerEl = document.getElementById(`${prefix}Provider`);
+        if (providerEl) {
+            providerEl.value = 'local';
+            onProviderChange(prefix);
+        }
+    }
 
     modelSearchClose(prefix);
 }
@@ -267,12 +605,21 @@ function highlightModelItem(prefix) {
     });
 }
 
-// навигация клавишами
+function scrollToHighlighted(prefix) {
+    const dd = document.getElementById(`${prefix}ModelDropdown`);
+    const item = dd.querySelector(`.model-search-item[data-idx="${modelSearchHighlight}"]`);
+    if (item) item.scrollIntoView({ block: 'nearest' });
+}
+
+// ====================================================
+// КЛАВИАТУРА + КЛИКИ (единый обработчик)
+// ====================================================
+
 document.addEventListener('keydown', (e) => {
     if (!modelSearchActivePrefix) return;
     const prefix = modelSearchActivePrefix;
     const dd = document.getElementById(`${prefix}ModelDropdown`);
-    if (!dd.classList.contains('open')) return;
+    if (!dd || !dd.classList.contains('open')) return;
 
     if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -294,15 +641,35 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-function scrollToHighlighted(prefix) {
-    const dd = document.getElementById(`${prefix}ModelDropdown`);
-    const item = dd.querySelector(`.model-search-item[data-idx="${modelSearchHighlight}"]`);
-    if (item) item.scrollIntoView({ block: 'nearest' });
-}
+// mousedown на dropdown — только предотвращаем потерю фокуса, НЕ обрабатываем клик
+document.addEventListener('mousedown', (e) => {
+    const dd = e.target.closest('.model-search-dropdown');
+    if (dd) {
+        e.preventDefault();
+    }
+});
 
-// делегированные клики по dropdown
+// единый click handler
 document.addEventListener('click', (e) => {
-    // клик по звёздочке
+    // кнопка скачивания локальной модели
+    const pullBtn = e.target.closest('[data-local-pull]');
+    if (pullBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        pullLocalModel(pullBtn.dataset.localPull);
+        return;
+    }
+
+    // кнопка удаления локальной модели
+    const delBtn = e.target.closest('[data-local-delete]');
+    if (delBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteLocalModel(delBtn.dataset.localDelete);
+        return;
+    }
+
+    // звёздочка
     const favBtn = e.target.closest('.model-search-fav-btn');
     if (favBtn) {
         e.preventDefault();
@@ -312,10 +679,11 @@ document.addEventListener('click', (e) => {
         return;
     }
 
-    // клик по модели (выбор)
+    // выбор модели
     const item = e.target.closest('.model-search-item');
     if (item && modelSearchActivePrefix) {
         e.preventDefault();
+        e.stopPropagation();
         const modelId = item.dataset.modelId;
         if (modelId) modelSearchSelect(modelSearchActivePrefix, modelId);
         return;
@@ -330,12 +698,6 @@ document.addEventListener('click', (e) => {
     });
 });
 
-// не даём dropdown отбирать фокус у инпута
-document.addEventListener('mousedown', (e) => {
-    if (e.target.closest('.model-search-dropdown')) {
-        e.preventDefault();
-    }
-});
 // ====================================================
 // ЗАГРУЗКА БОТОВ
 // ====================================================
@@ -358,7 +720,6 @@ function renderBots(bots) {
     }
 
     empty.style.display = 'none';
-
     grid.innerHTML = bots.map(bot => {
         const active = bot.is_active;
         const tg = bot.telegram_connected;
@@ -386,7 +747,7 @@ function renderBots(bots) {
                         ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); stopBot('${bot.bot_id}')">⏹</button>
                            <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); openTerminal('${bot.bot_id}', '${escapeHtml(bot.name)}')">🖥️ Чат</button>
                            <a class="btn btn-ghost btn-sm" href="/chat/${bot.bot_id}" target="_blank" onclick="event.stopPropagation()">🔗</a>
-                           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openFiles('${bot.bot_id}', '${escapeHtml(bot.name)}')">📁</button>
+                            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openFiles('${bot.bot_id}', '${escapeHtml(bot.name)}')">📁</button>
                            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openKnowledge('${bot.bot_id}')">📚</button>
                            ${bot.has_token && !tg
                                ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); startTelegram('${bot.bot_id}')">🔵</button>`
@@ -412,6 +773,9 @@ function openCreateModal() {
     document.getElementById('newToken').value = '';
     document.getElementById('newApiKey').value = '';
     document.getElementById('newModelManual').value = '';
+    document.getElementById('newModelValue').value = '';
+    document.getElementById('newModelSelected').innerHTML = '';
+    document.getElementById('newModelSearch').value = '';
     document.getElementById('newPrompt').value = 'Ты — полезный AI ассистент.';
     document.getElementById('newProvider').value = 'openrouter';
     document.getElementById('newCustomUrl').value = '';
@@ -426,23 +790,25 @@ async function createBot() {
     const manualModel = document.getElementById('newModelManual').value.trim();
     const selectedModel = document.getElementById('newModelValue').value;
     const model = manualModel || selectedModel;
-    if (!model) return toast('Выберите модель', 'error');
     const prompt = document.getElementById('newPrompt').value.trim();
     const provider = document.getElementById('newProvider').value;
     const customUrl = document.getElementById('newCustomUrl').value.trim();
 
     if (!name) return toast('Введите имя бота', 'error');
-    if (!apiKey) return toast('Введите API ключ', 'error');
+    if (!model) return toast('Выберите модель', 'error');
+    if (provider !== 'local' && !apiKey) return toast('Введите API ключ', 'error');
 
     try {
         await api('POST', '/api/bots', {
-            name, bot_token: token, api_key: apiKey, model,
+            name, bot_token: token, api_key: apiKey || 'local', model,
             system_prompt: prompt, provider, custom_base_url: customUrl
         });
         toast('Бот создан! ✅', 'success');
         closeModal('createModal');
         loadBots();
-    } catch (e) {}
+    } catch (e) {
+        toast(`Ошибка: ${e.message}`, 'error');
+    }
 }
 
 // ====================================================
@@ -474,15 +840,33 @@ async function openEditModal(botId) {
         document.getElementById('editCustomUrl').value = config.custom_base_url || '';
         onProviderChange('edit');
 
-        // модель из селекта
-        // устанавливаем текущую модель
+        // модель
         const currentModel = config.model || '';
         document.getElementById('editModelValue').value = currentModel;
-        const modelData = models.find(m => m.id === currentModel);
+        document.getElementById('editModelSearch').value = '';
+
+        // ищем модель во всех списках
+        let modelData = models.find(m => m.id === currentModel);
+        if (!modelData) {
+            // ищем в каталоге Ollama
+            for (const cat of ollamaCatalog) {
+                const tagEntries = Object.entries(cat.tags || {});
+                for (const [tag, info] of tagEntries) {
+                    const mId = tag === 'latest' ? cat.model : `${cat.model}:${tag}`;
+                    if (mId === currentModel) {
+                        modelData = { id: mId, name: `${cat.model}:${tag}`, price: 'бесплатно', censored: false, _local: true };
+                        break;
+                    }
+                }
+                if (modelData) break;
+            }
+        }
+
         if (modelData) {
             const censor = modelData.censored ? '' : ' 🔓';
+            const localTag = modelData._local ? ' 🖥️' : '';
             document.getElementById('editModelSelected').innerHTML =
-                `✅ <strong>${escapeHtml(modelData.name)}</strong> · ${modelData.price || ''}${censor}` +
+                `✅ <strong>${escapeHtml(modelData.name)}</strong> · ${modelData.price || ''}${censor}${localTag}` +
                 `<br><span style="color:#888; font-size:11px;">${escapeHtml(modelData.id)}</span>`;
             document.getElementById('editModelManual').value = '';
         } else {
@@ -492,30 +876,26 @@ async function openEditModal(botId) {
         }
 
         // инструменты
-                // инструменты
         document.getElementById('editToolsEnabled').checked = config.tools_enabled !== false;
         document.getElementById('editAccessMode').value = config.access_mode || 'sandbox';
         document.getElementById('editWorkingDirectory').value = config.working_directory || '';
         document.getElementById('editMaxToolRounds').value = config.max_tool_rounds || 15;
         const perms = config.tool_permissions || {};
         const permDefaults = {
-            execute_commands:true, write_files:true, delete_files:false,
-            network:false, install_packages:false,
-            user_can_clear_history:true, user_can_add_prompt:false, user_can_add_knowledge:false
+            execute_commands: true, write_files: true, delete_files: false,
+            network: false, install_packages: false,
+            user_can_clear_history: true, user_can_add_prompt: false, user_can_add_knowledge: false
         };
-        ['execute_commands','write_files','delete_files','network','install_packages',
-         'user_can_clear_history','user_can_add_prompt','user_can_add_knowledge'].forEach(p => {
+        ['execute_commands', 'write_files', 'delete_files', 'network', 'install_packages',
+         'user_can_clear_history', 'user_can_add_prompt', 'user_can_add_knowledge'].forEach(p => {
             const el = document.getElementById(`perm_${p}`);
             if (el) el.checked = perms[p] !== undefined ? perms[p] : (permDefaults[p] || false);
         });
 
         switchTab('settings');
-
-        // загружаем табы тихо (не показываем ошибки если бот не запущен)
         loadUsersTab(botId);
         loadStatsTab(botId);
         loadPaymentsTab(botId);
-
         openModal('editModal');
     } catch (e) {
         toast('Не удалось загрузить бота', 'error');
@@ -563,7 +943,9 @@ async function saveBot() {
         await api('PUT', `/api/bots/${currentBotId}`, updates);
         toast('Сохранено! ✅', 'success');
         loadBots();
-    } catch (e) {}
+    } catch (e) {
+        toast(`Ошибка: ${e.message}`, 'error');
+    }
 }
 
 // ====================================================
@@ -575,7 +957,7 @@ async function startBot(botId) {
         await api('POST', `/api/bots/${botId}/start`);
         toast('Бот запущен! 🟢', 'success');
         loadBots();
-    } catch (e) {}
+    } catch (e) { toast(`Ошибка: ${e.message}`, 'error'); }
 }
 
 async function stopBot(botId) {
@@ -583,7 +965,7 @@ async function stopBot(botId) {
         await api('POST', `/api/bots/${botId}/stop`);
         toast('Бот остановлен 🔴', 'info');
         loadBots();
-    } catch (e) {}
+    } catch (e) { toast(`Ошибка: ${e.message}`, 'error'); }
 }
 
 async function restartBot(botId) {
@@ -591,7 +973,7 @@ async function restartBot(botId) {
         await api('POST', `/api/bots/${botId}/restart`);
         toast('Бот перезапущен 🔄', 'success');
         loadBots();
-    } catch (e) {}
+    } catch (e) { toast(`Ошибка: ${e.message}`, 'error'); }
 }
 
 // ====================================================
@@ -603,7 +985,7 @@ async function startTelegram(botId) {
         await api('POST', `/api/bots/${botId}/telegram/start`);
         toast('Telegram подключён 🔵', 'success');
         loadBots();
-    } catch (e) {}
+    } catch (e) { toast(`Ошибка: ${e.message}`, 'error'); }
 }
 
 async function stopTelegram(botId) {
@@ -611,16 +993,15 @@ async function stopTelegram(botId) {
         await api('POST', `/api/bots/${botId}/telegram/stop`);
         toast('Telegram отключён', 'info');
         loadBots();
-    } catch (e) {}
+    } catch (e) { toast(`Ошибка: ${e.message}`, 'error'); }
 }
 
 // ====================================================
-// ТАБ: ЮЗЕРЫ (тихая загрузка)
+// ТАБ: ЮЗЕРЫ
 // ====================================================
 
 async function loadUsersTab(botId) {
     const container = document.getElementById('usersContent');
-
     const users = await apiSilent('GET', `/api/bots/${botId}/users`);
 
     if (!users) {
@@ -665,9 +1046,7 @@ async function toggleVip(userId, isVip) {
         await api('POST', `/api/bots/${currentBotId}/vip`, { user_id: userId, is_vip: isVip });
         toast(isVip ? 'VIP включён 👑' : 'VIP снят', 'success');
         loadUsersTab(currentBotId);
-    } catch (e) {
-        loadUsersTab(currentBotId);
-    }
+    } catch (e) { loadUsersTab(currentBotId); }
 }
 
 async function clearUser(userId) {
@@ -681,12 +1060,11 @@ async function clearUser(userId) {
 }
 
 // ====================================================
-// ТАБ: СТАТИСТИКА (тихая загрузка)
+// ТАБ: СТАТИСТИКА
 // ====================================================
 
 async function loadStatsTab(botId) {
     const container = document.getElementById('statsGrid');
-
     const stats = await apiSilent('GET', `/api/bots/${botId}/stats`);
 
     if (!stats) {
@@ -703,12 +1081,11 @@ async function loadStatsTab(botId) {
 }
 
 // ====================================================
-// ТАБ: ПЛАТЕЖИ (тихая загрузка)
+// ТАБ: ПЛАТЕЖИ
 // ====================================================
 
 async function loadPaymentsTab(botId) {
     const container = document.getElementById('paymentsTable');
-
     const payments = await apiSilent('GET', `/api/bots/${botId}/payments`);
 
     if (!payments) {
@@ -793,26 +1170,15 @@ document.addEventListener('click', (e) => {
     }
 });
 
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-        document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
-    }
-});
-
 // ====================================================
 // ТАБЫ
 // ====================================================
 
 function switchTab(tabName) {
-    // деактивируем все табы и контент
     document.querySelectorAll('#editTabs .tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-
-    // активируем нужный контент
     const content = document.getElementById(`tab-${tabName}`);
     if (content) content.classList.add('active');
-
-    // активируем кнопку таба
     document.querySelectorAll('#editTabs .tab').forEach(t => {
         if (t.dataset.tab === tabName) t.classList.add('active');
     });
@@ -825,8 +1191,16 @@ function switchTab(tabName) {
 function onProviderChange(prefix) {
     const provider = document.getElementById(`${prefix}Provider`).value;
     const urlGroup = document.getElementById(`${prefix}CustomUrlGroup`);
-    if (urlGroup) {
-        urlGroup.style.display = (provider === 'custom') ? 'block' : 'none';
+    const apiKeyGroup = document.getElementById(`${prefix}ApiKeyGroup`);
+    const localInfo = document.getElementById(`${prefix}LocalInfo`);
+
+    if (urlGroup) urlGroup.style.display = (provider === 'custom') ? 'block' : 'none';
+    if (apiKeyGroup) apiKeyGroup.style.display = (provider === 'local') ? 'none' : 'block';
+    if (localInfo) {
+        localInfo.style.display = (provider === 'local') ? 'block' : 'none';
+        if (provider === 'local') {
+            refreshOllamaPanel(prefix);
+        }
     }
 }
 
@@ -893,21 +1267,18 @@ function renderKnowledge(data) {
     const adminFiles = data.admin_files || [];
     const userFiles = data.user_files || [];
 
-    let html = `
-        <div style="margin-bottom:8px; color:#8b8b8b; font-size:12px;">
-            📊 ${data.total_files} файлов, ${data.total_chunks} чанков
-        </div>`;
+    let html = `<div style="margin-bottom:8px; color:#8b8b8b; font-size:12px;">
+        📊 ${data.total_files} файлов, ${data.total_chunks} чанков
+    </div>`;
 
     if (adminFiles.length > 0) {
         html += `<div style="color:#646cff; font-size:12px; margin:10px 0 6px;">📋 Загружено из панели (${adminFiles.length})</div>`;
         html += adminFiles.map(f => knowledgeFileRow(f)).join('');
     }
-
     if (userFiles.length > 0) {
         html += `<div style="color:#d29922; font-size:12px; margin:10px 0 6px;">👤 Загружено пользователями (${userFiles.length})</div>`;
         html += userFiles.map(f => knowledgeFileRow(f)).join('');
     }
-
     list.innerHTML = html;
 }
 
@@ -928,9 +1299,7 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function triggerFileUpload() {
-    document.getElementById('knowledgeFileInput').click();
-}
+function triggerFileUpload() { document.getElementById('knowledgeFileInput').click(); }
 
 async function handleFileUpload(event) {
     const files = event.target.files;
@@ -987,9 +1356,7 @@ async function addKnowledgeText() {
             document.getElementById('knowledgeTextName').value = '';
             document.getElementById('knowledgeTextContent').value = '';
             await loadKnowledge();
-        } else {
-            toast(`❌ ${result.error}`, 'error');
-        }
+        } else toast(`❌ ${result.error}`, 'error');
     } catch (e) {}
 }
 
@@ -1026,20 +1393,18 @@ async function testSearch() {
                 <div style="font-size:11px; color:#646cff; margin-bottom:4px;">
                     #${i + 1} · ${escapeHtml(r.source)} · score: ${r.score.toFixed(3)}
                 </div>
-                <div style="font-size:13px; color:#ccc;">
-                    ${escapeHtml(r.text).substring(0, 200)}
-                </div>
+                <div style="font-size:13px; color:#ccc;">${escapeHtml(r.text).substring(0, 200)}</div>
             </div>
         `).join('');
     } catch (e) {}
 }
 
 // ====================================================
-// ТЕРМИНАЛ — чат с ботом в панели
+// ТЕРМИНАЛ
 // ====================================================
 
 let terminalBotId = null;
-let terminalUserId = Date.now(); // уникальный user_id для сессии
+let terminalUserId = Date.now();
 
 function openTerminal(botId, botName) {
     terminalBotId = botId;
@@ -1061,11 +1426,8 @@ async function terminalSend() {
 
     input.value = '';
     const container = document.getElementById('terminalMessages');
-
-    // добавляем сообщение юзера
     container.innerHTML += `<div style="color:#646cff; margin:8px 0;">▸ ${escapeHtml(msg)}</div>`;
 
-    // индикатор
     const thinkId = 'think_' + Date.now();
     container.innerHTML += `<div id="${thinkId}" style="color:#555;">⏳ Думаю...</div>`;
     container.scrollTop = container.scrollHeight;
@@ -1076,7 +1438,6 @@ async function terminalSend() {
             user_id: terminalUserId
         });
 
-        // удаляем индикатор
         const thinkEl = document.getElementById(thinkId);
         if (thinkEl) thinkEl.remove();
 
@@ -1100,7 +1461,6 @@ function terminalClear() {
     document.getElementById('terminalMessages').innerHTML = `
         <div style="color:#555;">🗑️ Экран очищен</div>`;
 }
-
 
 // ====================================================
 // ФАЙЛОВЫЙ МЕНЕДЖЕР
@@ -1145,13 +1505,11 @@ async function filesLoad() {
     }
 
     if (data.type === 'file') {
-        // открыли файл — показываем в редакторе
         fileEditorOpen(data.name, data.content, data.readonly || filesSystemMode);
         return;
     }
 
     const items = data.items || [];
-
     if (items.length === 0) {
         list.innerHTML = '<p style="color:#555; padding:16px; text-align:center;">📭 Пусто</p>';
         return;
@@ -1238,14 +1596,10 @@ function fileEditorClose() {
 async function fileEditorSave() {
     if (!filesEditingPath || !filesBotId) return;
     const content = document.getElementById('fileEditorContent').value;
-
     try {
-        await api('PUT', `/api/bots/${filesBotId}/files`, {
-            path: filesEditingPath,
-            content: content
-        });
+        await api('PUT', `/api/bots/${filesBotId}/files`, { path: filesEditingPath, content: content });
         toast('Файл сохранён ✅', 'success');
-    } catch (e) {}
+    } catch (e) { toast(`Ошибка: ${e.message}`, 'error'); }
 }
 
 async function filesDeleteFile(path, name) {
@@ -1263,4 +1617,190 @@ function filesNewFile() {
     const path = filesCurrentPath ? `${filesCurrentPath}/${name}` : name;
     filesEditingPath = path;
     fileEditorOpen(name, '', false);
+}
+
+// ====================================================
+// OLLAMA — управление из панели
+// ====================================================
+
+let ollamaChecking = false;
+
+async function refreshOllamaPanel(prefix) {
+    if (ollamaChecking) return;
+    ollamaChecking = true;
+
+    const container = document.getElementById(`${prefix}OllamaStatus`);
+    if (!container) { ollamaChecking = false; return; }
+
+    container.innerHTML = '<span style="color:#555;">⏳ Проверка...</span>';
+
+    const status = await apiSilent('GET', '/api/local/status');
+    const installed = status && status.installed;
+    const running = status && status.running;
+    const binary = status ? status.binary : null;
+
+    if (!installed) {
+        // НЕ УСТАНОВЛЕНА
+        container.innerHTML = `
+            <div class="ollama-status-row">
+                <span class="ollama-status-badge missing">⬜ Не установлена</span>
+            </div>
+            <div class="ollama-actions">
+                <button class="btn-ollama install" onclick="installOllama('${prefix}')">
+                    📦 Установить Ollama
+                </button>
+            </div>
+            <div class="ollama-info">
+                Ollama — движок для запуска AI на вашем ПК.<br>
+                Бесплатно, данные не уходят в интернет.<br>
+                ~100MB. Модели 1-10GB каждая.
+            </div>`;
+        ollamaChecking = false;
+        return;
+    }
+
+    if (!running) {
+        // УСТАНОВЛЕНА НО НЕ ЗАПУЩЕНА
+        container.innerHTML = `
+            <div class="ollama-status-row">
+                <span class="ollama-status-badge offline">🟠 Остановлена</span>
+                <span style="color:#555; font-size:11px;">${escapeHtml(binary || '')}</span>
+            </div>
+            <div class="ollama-actions">
+                <button class="btn-ollama start" onclick="startOllama('${prefix}')">
+                    ▶️ Запустить
+                </button>
+                <button class="btn-ollama uninstall" onclick="uninstallOllama('${prefix}')">
+                    🗑️ Удалить
+                </button>
+            </div>`;
+        ollamaChecking = false;
+        return;
+    }
+
+    // РАБОТАЕТ
+    const modelCount = (status.models || []).length;
+    ollamaAvailable = true;
+    localModels = status.models || [];
+
+    const modelsList = localModels.map(m => {
+        const sizeGB = m.size ? (m.size / 1024 / 1024 / 1024).toFixed(1) + 'GB' : '';
+        return `<span style="color:#e0e0e0;">${m.name}</span> <span style="color:#555;">${sizeGB}</span>`;
+    }).join(' · ');
+
+    container.innerHTML = `
+        <div class="ollama-status-row">
+            <span class="ollama-status-badge online">🟢 Работает</span>
+            <span style="color:#555; font-size:12px;">${modelCount} моделей</span>
+        </div>
+        ${modelCount > 0 ? `<div class="ollama-models-count">📦 ${modelsList}</div>` : '<div class="ollama-info">💡 Скачайте модель в поиске выше — локальные отмечены 🖥️</div>'}
+        <div class="ollama-actions">
+            <button class="btn-ollama stop" onclick="stopOllama('${prefix}')">
+                ⏹ Остановить
+            </button>
+            <button class="btn-ollama uninstall" onclick="uninstallOllama('${prefix}')">
+                🗑️ Удалить
+            </button>
+        </div>`;
+
+    ollamaChecking = false;
+}
+
+
+
+async function installOllama(prefix) {
+    const container = document.getElementById(`${prefix}OllamaStatus`);
+    container.innerHTML = `
+        <div class="ollama-progress">
+            ⏳ Установка Ollama... Это может занять 1-3 минуты.<br>
+            Не закрывайте страницу.
+        </div>`;
+
+    try {
+        const result = await api('POST', '/api/local/install');
+        if (result.ok) {
+            toast(result.message || 'Ollama установлена! ✅', 'success');
+            await checkOllama();
+            await refreshOllamaPanel(prefix);
+        } else {
+            // показываем ошибку с инструкцией прямо в панели
+            const errorMsg = result.error || 'Неизвестная ошибка';
+            container.innerHTML = `
+                <div style="padding:12px; background:#1a0a0a; border:1px solid #4a1a1a; border-radius:8px;">
+                    <p style="color:#f85149; margin-bottom:10px;">❌ Не удалось установить автоматически</p>
+                    <pre style="color:#e0e0e0; font-size:12px; white-space:pre-wrap; background:#0a0a0a; padding:10px; border-radius:6px; margin-bottom:10px;">${escapeHtml(errorMsg)}</pre>
+                    <p style="color:#f0883e; font-size:13px; margin-bottom:8px;">📋 Установите вручную — одна команда:</p>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <code style="flex:1; padding:10px; background:#1a1a2a; border:1px solid #333; border-radius:6px; color:#646cff; font-size:13px; user-select:all;">curl -fsSL https://ollama.com/install.sh | sudo sh</code>
+                        <button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('curl -fsSL https://ollama.com/install.sh | sudo sh'); toast('Скопировано!', 'success')">📋</button>
+                    </div>
+                    <p style="color:#555; font-size:11px; margin-top:8px;">Выполните в терминале, затем нажмите «Проверить»</p>
+                    <button class="btn-ollama start" onclick="refreshOllamaPanel('${prefix}')" style="margin-top:10px;">
+                        🔄 Проверить
+                    </button>
+                </div>`;
+        }
+    } catch (e) {
+        toast(`❌ ${e.message}`, 'error');
+        await refreshOllamaPanel(prefix);
+    }
+}
+async function startOllama(prefix) {
+    const container = document.getElementById(`${prefix}OllamaStatus`);
+    container.innerHTML = '<div class="ollama-progress">⏳ Запуск Ollama...</div>';
+
+    try {
+        const result = await api('POST', '/api/local/start');
+        if (result.ok) {
+            toast('Ollama запущена ✅', 'success');
+            await checkOllama();
+            await refreshOllamaPanel(prefix);
+        } else {
+            toast(`❌ ${result.error}`, 'error');
+            await refreshOllamaPanel(prefix);
+        }
+    } catch (e) {
+        toast(`❌ ${e.message}`, 'error');
+        await refreshOllamaPanel(prefix);
+    }
+}
+
+async function stopOllama(prefix) {
+    try {
+        const result = await api('POST', '/api/local/stop');
+        if (result.ok) {
+            toast('Ollama остановлена', 'info');
+            ollamaAvailable = false;
+            localModels = [];
+            await refreshOllamaPanel(prefix);
+        } else {
+            toast(`❌ ${result.error}`, 'error');
+        }
+    } catch (e) {
+        toast(`❌ ${e.message}`, 'error');
+    }
+}
+
+async function uninstallOllama(prefix) {
+    if (!confirm('Удалить Ollama и ВСЕ скачанные модели?')) return;
+    if (!confirm('Точно удалить? Модели придётся качать заново.')) return;
+
+    const container = document.getElementById(`${prefix}OllamaStatus`);
+    container.innerHTML = '<div class="ollama-progress">⏳ Удаление Ollama...</div>';
+
+    try {
+        const result = await api('DELETE', '/api/local/uninstall');
+        if (result.ok) {
+            toast(result.message || 'Ollama удалена', 'success');
+            ollamaAvailable = false;
+            localModels = [];
+            await refreshOllamaPanel(prefix);
+        } else {
+            toast(`❌ ${result.error}`, 'error');
+            await refreshOllamaPanel(prefix);
+        }
+    } catch (e) {
+        toast(`❌ ${e.message}`, 'error');
+        await refreshOllamaPanel(prefix);
+    }
 }

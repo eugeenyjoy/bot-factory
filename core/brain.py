@@ -355,6 +355,8 @@ class Brain:
     # ============================
 
     def _call_ai(self, messages: list) -> tuple:
+        # фильтр: Ollama не принимает content=None
+        messages = [{"role": m["role"], "content": m.get("content") or ""} for m in messages]
         tool_log = []
         formatted = ""
 

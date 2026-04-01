@@ -50,15 +50,23 @@
                     <option value="xai">xAI — прямой (Grok)</option>
                     <option value="google">Google AI Studio (Gemini) ⚠️VPN</option>
                     <option value="custom">Свой API (OpenAI-совместимый)</option>
+                    <option value="local">🖥️ Local (Ollama) — бесплатно, на вашем ПК</option>
                 </select>
             </div>
             <div class="form-group" id="newCustomUrlGroup" style="display:none;">
                 <label>🔗 Base URL</label>
                 <input type="text" id="newCustomUrl" placeholder="https://your-api.com/v1">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="newApiKeyGroup">
                 <label>🔑 API ключ</label>
                 <input type="password" id="newApiKey" placeholder="sk-or-...">
+            </div>
+            <div class="form-group" id="newLocalInfo" style="display:none;">
+                <div class="ollama-panel" id="newOllamaPanel">
+                    <div id="newOllamaStatus">
+                        <span style="color:#555;">⏳ Проверка Ollama...</span>
+                    </div>
+                </div>
             </div>
             <div class="form-group">
                 <label>🤖 Модель</label>
@@ -128,15 +136,23 @@
                     <option value="xai">xAI (Grok)</option>
                     <option value="google">Google AI Studio ⚠️VPN</option>
                     <option value="custom">Свой API</option>
+                    <option value="local">🖥️ Local (Ollama) — бесплатно, на вашем ПК</option>
                 </select>
             </div>
             <div class="form-group" id="editCustomUrlGroup" style="display:none;">
                 <label>🔗 Base URL</label>
                 <input type="text" id="editCustomUrl" placeholder="https://your-api.com/v1">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="editApiKeyGroup">
                 <label>🔑 API ключ</label>
                 <input type="password" id="editApiKey">
+            </div>
+            <div class="form-group" id="editLocalInfo" style="display:none;">
+                <div class="ollama-panel" id="editOllamaPanel">
+                    <div id="editOllamaStatus">
+                        <span style="color:#555;">⏳ Проверка Ollama...</span>
+                    </div>
+                </div>
             </div>
             <div class="form-group">
                 <label>🤖 Модель</label>

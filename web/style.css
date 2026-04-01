@@ -994,6 +994,176 @@ body {
     border-bottom-color: #332a10;
 }
 
+/* локальные модели */
+.model-search-category.local-cat {
+    color: #3fb950;
+    background: #0a1a0a;
+    border-bottom-color: #1a331a;
+}
+
+.btn-local-action {
+    background: none;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    color: #ccc;
+}
+
+.btn-local-action.download {
+    border-color: #3fb950;
+    color: #3fb950;
+}
+
+.btn-local-action.download:hover {
+    background: #3fb95020;
+}
+
+.btn-local-action.delete {
+    border-color: #f85149;
+    color: #f85149;
+    font-size: 11px;
+    padding: 2px 6px;
+}
+
+.btn-local-action.delete:hover {
+    background: #f8514920;
+}
+
+/* ====================================================
+   OLLAMA ПАНЕЛЬ
+   ==================================================== */
+
+.ollama-panel {
+    padding: 16px;
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 10px;
+}
+
+.ollama-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.ollama-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.ollama-status-badge.online {
+    background: #0a2a0a;
+    border: 1px solid #1a4a1a;
+    color: #3fb950;
+}
+
+.ollama-status-badge.offline {
+    background: #2a1a0a;
+    border: 1px solid #4a3a1a;
+    color: #f0883e;
+}
+
+.ollama-status-badge.missing {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: #888;
+}
+
+.ollama-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+.ollama-info {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #555;
+    line-height: 1.6;
+}
+
+.ollama-models-count {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #3fb950;
+}
+
+.btn-ollama {
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid #333;
+    transition: all 0.15s;
+}
+
+.btn-ollama.install {
+    background: #1a3a1a;
+    border-color: #3fb950;
+    color: #3fb950;
+}
+
+.btn-ollama.install:hover {
+    background: #2a4a2a;
+}
+
+.btn-ollama.start {
+    background: #0a1a3a;
+    border-color: #646cff;
+    color: #646cff;
+}
+
+.btn-ollama.start:hover {
+    background: #1a2a4a;
+}
+
+.btn-ollama.stop {
+    background: #1a1a1a;
+    border-color: #f0883e;
+    color: #f0883e;
+}
+
+.btn-ollama.stop:hover {
+    background: #2a1a0a;
+}
+
+.btn-ollama.uninstall {
+    background: #1a0a0a;
+    border-color: #f85149;
+    color: #f85149;
+    font-size: 11px;
+}
+
+.btn-ollama.uninstall:hover {
+    background: #2a0a0a;
+}
+
+.btn-ollama:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.ollama-progress {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #0a0a0a;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #f0883e;
+}
+
 /* ============================
    АДАПТИВНОСТЬ
    ============================ */

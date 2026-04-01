@@ -12,6 +12,10 @@ import base64
 import shutil
 import os
 import logging
+import aiohttp
+import platform
+import shutil
+import asyncio
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +25,8 @@ from typing import Optional, List
 from pathlib import Path
 
 from engine import Engine
+from core import ollama_catalog
+
 from core.config import (
     list_bots, load_config, create_bot, delete_bot,
     update_bot, get_models, get_providers, BOTS_DIR
@@ -45,6 +51,9 @@ app = FastAPI(title="Bot Factory", version="2.1")
 
 # движок
 engine = Engine()
+
+# инициализация каталога Ollama
+ollama_catalog.init()
 
 
 # ====================================================
@@ -617,6 +626,454 @@ def api_get_models():
 def api_get_providers():
     return get_providers()
 
+# ====================================================
+# ЛОКАЛЬНЫЕ МОДЕЛИ (OLLAMA)
+# ====================================================
+
+OLLAMA_BASE = "http://localhost:11434"
+
+# ====================================================
+# ====================================================
+# КАТАЛОГ OLLAMA — динамический с кешем
+# ====================================================
+
+@app.get("/api/local/catalog")
+async def local_catalog(q: str = "", limit: int = 50):
+    """Поиск моделей в каталоге Ollama"""
+    return ollama_catalog.search(q, limit)
+
+@app.get("/api/local/catalog/{model_name}/tags")
+async def local_catalog_tags(model_name: str):
+    """Все теги конкретной модели"""
+    tags = ollama_catalog.get_model_tags(model_name)
+    if not tags:
+        raise HTTPException(404, f"Model {model_name} not found")
+    return {"model": model_name, "tags": tags, "total": len(tags)}
+
+@app.post("/api/local/catalog/refresh")
+async def local_catalog_refresh():
+    """Принудительное обновление каталога"""
+    return ollama_catalog.force_update()
+
+
+
+def find_ollama_binary():
+    """Find ollama binary path"""
+    # 1. shutil.which
+    path = shutil.which("ollama")
+    if path:
+        return path
+    # 2. common locations
+    for p in ["/usr/local/bin/ollama", "/usr/bin/ollama", os.path.expanduser("~/bin/ollama")]:
+        if os.path.isfile(p):
+            return p
+    return None
+
+@app.get("/api/local/status")
+async def local_status():
+    """Проверяет доступность Ollama и список моделей"""
+    binary = find_ollama_binary()
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=3)
+        ) as session:
+            async with session.get(f"{OLLAMA_BASE}/api/tags") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        "available": True,
+                        "installed": True,
+                        "running": True,
+                        "binary": binary,
+                        "models": [
+                            {
+                                "name": m.get("name", ""),
+                                "size": m.get("size", 0),
+                                "modified": m.get("modified_at", ""),
+                            }
+                            for m in data.get("models", [])
+                        ]
+                    }
+    except Exception:
+        pass
+
+    return {
+        "available": False,
+        "installed": binary is not None,
+        "running": False,
+        "binary": binary,
+        "models": []
+    }
+
+
+@app.post("/api/local/install")
+async def local_install():
+    """Устанавливает Ollama через графический запрос пароля"""
+    system = platform.system().lower()
+
+    # может уже установлена?
+    binary = find_ollama_binary()
+    if binary:
+        return {"ok": True, "message": f"Ollama уже установлена: {binary}"}
+
+    try:
+        if system in ("linux", "darwin"):
+            # скачиваем скрипт
+            script_path = '/tmp/ollama_install.sh'
+
+            proc_dl = await asyncio.create_subprocess_shell(
+                f"curl -fsSL https://ollama.com/install.sh -o {script_path} && chmod +x {script_path}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc_dl.communicate(), timeout=60
+            )
+
+            if proc_dl.returncode != 0:
+                return {"ok": False, "error": f"Не удалось скачать: {stderr.decode()[:300]}"}
+
+            # запускаем через pkexec (графический sudo)
+            proc = await asyncio.create_subprocess_exec(
+                'pkexec', 'bash', script_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=300
+            )
+
+            stdout_text = stdout.decode() if stdout else ''
+            stderr_text = stderr.decode() if stderr else ''
+            print(f"[OLLAMA INSTALL] code: {proc.returncode}")
+            print(f"[OLLAMA INSTALL] stdout: {stdout_text[:500]}")
+            print(f"[OLLAMA INSTALL] stderr: {stderr_text[:500]}")
+
+            # чистим скрипт
+            try:
+                os.remove(script_path)
+            except Exception:
+                pass
+
+            # проверяем
+            binary = find_ollama_binary()
+            if binary:
+                return {"ok": True, "message": f"Ollama установлена: {binary} ✅"}
+
+            if proc.returncode == 126:
+                return {"ok": False, "error": "Отменено — вы не ввели пароль"}
+            if proc.returncode == 127:
+                return {"ok": False, "error": "pkexec не найден. Установите: sudo apt install policykit-1"}
+
+            return {
+                "ok": False,
+                "error": f"Код {proc.returncode}: {stderr_text[:300]}"
+            }
+
+        elif system == "windows":
+            proc = await asyncio.create_subprocess_shell(
+                'powershell -Command "'
+                'Invoke-WebRequest -Uri https://ollama.com/download/OllamaSetup.exe '
+                '-OutFile $env:TEMP\\OllamaSetup.exe; '
+                'Start-Process $env:TEMP\\OllamaSetup.exe -ArgumentList \'/S\' -Wait -Verb RunAs"',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=600
+            )
+            binary = find_ollama_binary()
+            if binary:
+                return {"ok": True, "message": "Ollama установлена ✅"}
+            return {"ok": False, "error": stderr.decode()[:500]}
+
+        return {"ok": False, "error": f"ОС {system} не поддерживается"}
+
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "Таймаут (5 мин)"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+@app.post("/api/local/start")
+async def local_start_ollama():
+    """Запускает Ollama как обычный процесс, модели в папке проекта"""
+
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(project_dir, 'ollama_data', 'models')
+    os.makedirs(models_dir, exist_ok=True)
+
+    binary = find_ollama_binary()
+    if not binary:
+        return {"ok": False, "error": "Ollama не найдена. Установите через панель."}
+
+    # Проверяем — если уже работает, но запущена системным сервисом,
+    # останавливаем и перезапускаем с нашим OLLAMA_MODELS
+    already_running = False
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=3)
+        ) as session:
+            async with session.get(f"{OLLAMA_BASE}/api/tags") as resp:
+                if resp.status == 200:
+                    already_running = True
+    except Exception:
+        pass
+
+    if already_running:
+        # Проверяем — наш ли это процесс (по env OLLAMA_MODELS)
+        our_process = False
+        try:
+            for proc_info in __import__('psutil').process_iter(['pid', 'name', 'environ']):
+                if 'ollama' in (proc_info.info.get('name') or '').lower():
+                    penv = proc_info.info.get('environ') or {}
+                    if penv.get('OLLAMA_MODELS') == models_dir:
+                        our_process = True
+                        break
+        except Exception:
+            # psutil не установлен — проверяем через /proc
+            try:
+                import subprocess as _sp
+                pids = _sp.check_output(['pgrep', '-f', 'ollama serve'], text=True).strip().split()
+                for pid in pids:
+                    try:
+                        env_data = open(f'/proc/{pid}/environ', 'r').read()
+                        if f'OLLAMA_MODELS={models_dir}' in env_data:
+                            our_process = True
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        if our_process:
+            return {"ok": True, "message": "Ollama уже работает ✅"}
+        else:
+            # Чужой процесс — останавливаем
+            print("[OLLAMA] Обнаружен чужой процесс Ollama, перезапускаем с нашим OLLAMA_MODELS")
+            try:
+                system = platform.system().lower()
+                if system == "windows":
+                    await asyncio.create_subprocess_shell('taskkill /F /IM ollama.exe')
+                else:
+                    # Стоп системный сервис
+                    await asyncio.create_subprocess_shell('sudo systemctl stop ollama 2>/dev/null; pkill -f "ollama serve" 2>/dev/null')
+                await asyncio.sleep(2)
+            except Exception:
+                pass
+
+    try:
+        env = os.environ.copy()
+        env['OLLAMA_HOST'] = '127.0.0.1:11434'
+        env['OLLAMA_MODELS'] = models_dir
+
+        proc = await asyncio.create_subprocess_exec(
+            binary, 'serve',
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+            start_new_session=True
+        )
+
+        for i in range(20):
+            await asyncio.sleep(1)
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=2)
+                ) as session:
+                    async with session.get(f"{OLLAMA_BASE}/api/tags") as resp:
+                        if resp.status == 200:
+                            return {"ok": True, "message": "Ollama запущена ✅ (модели: ollama_data/)"}
+            except Exception:
+                continue
+
+        return {"ok": False, "error": f"Ollama не отвечает. Попробуйте: {binary} serve"}
+
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+@app.post("/api/local/stop")
+async def local_stop_ollama():
+    """Останавливает Ollama"""
+    system = platform.system().lower()
+
+    try:
+        if system == "windows":
+            cmd = 'taskkill /F /IM ollama.exe 2>nul'
+        else:
+            cmd = 'pkill -f "ollama serve" 2>/dev/null; pkill ollama 2>/dev/null'
+
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=10)
+
+        # проверяем что остановилась
+        await asyncio.sleep(1)
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=2)
+            ) as session:
+                async with session.get(f"{OLLAMA_BASE}/api/tags") as resp:
+                    if resp.status == 200:
+                        return {"ok": False, "error": "Ollama всё ещё работает"}
+        except Exception:
+            pass
+
+        return {"ok": True, "message": "Ollama остановлена"}
+
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+@app.post("/api/local/pull")
+async def local_pull(body: dict):
+    """Скачивает модель"""
+    model = body.get("model", "")
+    if not model:
+        raise HTTPException(400, "model required")
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=1800)
+        ) as session:
+            async with session.post(
+                f"{OLLAMA_BASE}/api/pull",
+                json={"name": model, "stream": False}
+            ) as resp:
+                if resp.status == 200:
+                    return {"ok": True, "model": model}
+                else:
+                    error = (await resp.text())[:200]
+                    return {"ok": False, "error": error}
+    except aiohttp.ClientConnectorError:
+        return {"ok": False, "error": "Ollama не запущена. Нажмите 'Запустить'."}
+    except TimeoutError:
+        return {"ok": False, "error": "Таймаут — модель большая, попробуйте ещё раз"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@app.delete("/api/local/model")
+async def local_delete_model(body: dict):
+    """Удаляет одну модель"""
+    model = body.get("model", "")
+    if not model:
+        raise HTTPException(400, "model required")
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as session:
+            async with session.request(
+                'DELETE',
+                f"{OLLAMA_BASE}/api/delete",
+                json={"name": model}
+            ) as resp:
+                if resp.status == 200:
+                    return {"ok": True}
+                else:
+                    return {"ok": False, "error": (await resp.text())[:200]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@app.delete("/api/local/uninstall")
+async def local_uninstall():
+    """Удаляет Ollama через графический запрос пароля"""
+    system = platform.system().lower()
+
+    # останавливаем
+    try:
+        await local_stop_ollama()
+    except Exception:
+        pass
+
+    await asyncio.sleep(1)
+
+    if system == "linux":
+        # удаляем модели (без sudo)
+        ollama_home = os.path.expanduser('~/.ollama')
+        if os.path.exists(ollama_home):
+            try:
+                shutil.rmtree(ollama_home)
+            except Exception:
+                pass
+
+        # удаляем бинарник через pkexec
+        binary = find_ollama_binary()
+        if binary:
+            try:
+                os.remove(binary)
+            except PermissionError:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        'pkexec', 'rm', '-f', binary,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await asyncio.wait_for(proc.communicate(), timeout=30)
+                except Exception:
+                    pass
+
+        # удаляем сервис и пользователя
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'pkexec', 'bash', '-c',
+                'systemctl stop ollama 2>/dev/null; '
+                'systemctl disable ollama 2>/dev/null; '
+                'rm -f /etc/systemd/system/ollama.service; '
+                'rm -rf /usr/share/ollama; '
+                'userdel ollama 2>/dev/null; '
+                'groupdel ollama 2>/dev/null',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=30)
+        except Exception:
+            pass
+
+        # проверяем
+        binary = find_ollama_binary()
+        if not binary:
+            return {"ok": True, "message": "Ollama полностью удалена ✅"}
+        return {"ok": True, "message": "Модели удалены. Бинарник может остаться."}
+
+    elif system == "darwin":
+        for path in [os.path.expanduser('~/.ollama')]:
+            if os.path.exists(path):
+                shutil.rmtree(path, ignore_errors=True)
+
+        binary = find_ollama_binary()
+        if binary:
+            try:
+                os.remove(binary)
+            except PermissionError:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        'pkexec', 'rm', '-f', binary,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await asyncio.wait_for(proc.communicate(), timeout=30)
+                except Exception:
+                    pass
+
+        return {"ok": True, "message": "Ollama удалена ✅"}
+
+    elif system == "windows":
+        for p in [
+            os.path.expandvars(r'%LOCALAPPDATA%\Ollama'),
+            os.path.expandvars(r'%USERPROFILE%\.ollama'),
+        ]:
+            if os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True)
+        return {"ok": True, "message": "Ollama удалена ✅"}
+
+    return {"ok": False, "error": "Неизвестная ОС"}
 
 # ====================================================
 # API — ФАЙЛОВЫЙ МЕНЕДЖЕР
@@ -802,3 +1259,71 @@ if __name__ == "__main__":
 
     threading.Thread(target=open_browser, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+
+# ─── HuggingFace GGUF поиск ───
+
+@app.get("/api/hf/search")
+async def hf_search(q: str = "", limit: int = 20):
+    """Ищет GGUF модели на HuggingFace"""
+    if not q or len(q) < 2:
+        return {"models": []}
+
+    search_q = f"{q} gguf"
+    url = (
+        f"https://huggingface.co/api/models"
+        f"?search={search_q}&filter=gguf"
+        f"&sort=downloads&direction=-1&limit={limit}"
+    )
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return {"models": [], "error": f"HF API: {resp.status}"}
+                data = await resp.json()
+
+        results = []
+        for m in data:
+            model_id = m.get("id", "")
+            tags = m.get("tags", [])
+            downloads = m.get("downloads", 0)
+
+            # определяем размер по тегам
+            size_hint = ""
+            for t in tags:
+                if "b-" in t.lower() or t.lower().endswith("b"):
+                    pass
+                if any(x in t.lower() for x in ["1b", "3b", "7b", "8b", "14b", "27b", "35b", "70b"]):
+                    for part in t.replace("-", " ").split():
+                        if part.lower().endswith("b") and part[:-1].replace(".", "").isdigit():
+                            size_hint = part.upper()
+                            break
+
+            # размер из имени модели
+            if not size_hint:
+                import re as _re
+                sz = _re.search(r'(\d+\.?\d*)[Bb]', model_id)
+                if sz:
+                    size_hint = sz.group(0).upper()
+
+            is_uncensored = any(
+                x in model_id.lower() or x in " ".join(tags).lower()
+                for x in ["abliterate", "uncensor", "lexi", "dolphin"]
+            )
+
+            results.append({
+                "hf_id": model_id,
+                "ollama_id": f"hf.co/{model_id}",
+                "name": model_id.split("/")[-1].replace("-GGUF", "").replace("-gguf", ""),
+                "downloads": downloads,
+                "size_hint": size_hint,
+                "uncensored": is_uncensored,
+                "tags": [t for t in tags if t in ["chat", "conversational", "abliterated", "uncensored"]],
+            })
+
+        return {"models": results}
+
+    except Exception as e:
+        return {"models": [], "error": str(e)[:200]}

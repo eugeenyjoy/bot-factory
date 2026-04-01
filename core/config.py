@@ -73,6 +73,10 @@ AI_PROVIDERS = {
         "key_prefix": "",
         "description": "Любой OpenAI-совместимый API. Укажите base_url.",
     },
+    "local": {
+        "base_url": "http://localhost:11434/v1",
+        "name": "Local (Ollama)"
+    },
 }
 
 
