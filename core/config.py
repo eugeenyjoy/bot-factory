@@ -7,6 +7,7 @@
 import json
 import time
 import logging
+import os
 import requests
 from pathlib import Path
 
@@ -452,6 +453,13 @@ def save_config(bot_id: str, config: dict):
     config["bot_id"] = bot_id
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+    # На Unix ограничиваем доступ только владельцем (секреты: api_key, bot_token)
+    if os.name != "nt":
+        try:
+            os.chmod(bot_dir, 0o700)
+            os.chmod(config_path, 0o600)
+        except OSError:
+            pass
 
 
 def create_bot(name: str, bot_token: str, api_key: str, model: str = None,
