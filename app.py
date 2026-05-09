@@ -16,8 +16,10 @@ import aiohttp
 import platform
 import shutil
 import asyncio
+import hmac
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, validator
@@ -48,6 +50,48 @@ ROOT_DIR = Path(__file__).parent
 
 # FastAPI
 app = FastAPI(title="Bot Factory", version="2.1")
+
+
+# ====================================================
+# БЕЗОПАСНОСТЬ API
+# ====================================================
+
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+ALLOW_REMOTE = os.getenv("BF_ALLOW_REMOTE", "").lower() in {"1", "true", "yes", "on"}
+ADMIN_TOKEN = os.getenv("BF_ADMIN_TOKEN", "").strip()
+ENABLE_SYSTEM_FILES_API = os.getenv("BF_ENABLE_SYSTEM_FILES_API", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _is_local_client(request: Request) -> bool:
+    client_host = request.client.host if request.client else ""
+    return client_host in LOCAL_HOSTS
+
+
+def _token_valid(request: Request) -> bool:
+    if not ADMIN_TOKEN:
+        return True
+    given = request.headers.get("x-api-token", "")
+    return hmac.compare_digest(given, ADMIN_TOKEN)
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    path = request.url.path
+
+    # Ограничиваем API только локальным доступом (по умолчанию)
+    if path.startswith("/api/") and not ALLOW_REMOTE and not _is_local_client(request):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Remote API access disabled. Set BF_ALLOW_REMOTE=1 to allow."}
+        )
+
+    # Опциональная API-токен защита
+    if path.startswith("/api/") and not _token_valid(request):
+        return JSONResponse(status_code=401, content={"detail": "Invalid API token"})
+
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 # движок
 engine = Engine()
@@ -443,7 +487,7 @@ def api_web_chat(bot_id: str, req: ChatRequest):
         )
     except Exception as e:
         logger.error(f"Chat error {bot_id}: {type(e).__name__}: {e}")
-        return {"ok": False, "reply": "⚠️ Внутренняя ошибка. Попробуйте ещё раз.", "error": str(e)}
+        return {"ok": False, "reply": "⚠️ Внутренняя ошибка. Попробуйте ещё раз.", "error": "internal_error"}
 
     if not result.get("ok") and result.get("error") == "limit":
         result["reply"] = (
@@ -1196,6 +1240,12 @@ CODE_EXTENSIONS = {'.py', '.js', '.css', '.html', '.sh', '.bat'}
 
 @app.get("/api/system/files")
 def api_system_files(path: str = ""):
+    if not ENABLE_SYSTEM_FILES_API:
+        raise HTTPException(
+            status_code=403,
+            detail="System files API is disabled. Set BF_ENABLE_SYSTEM_FILES_API=1 to enable."
+        )
+
     target = safe_resolve_path(ROOT_DIR, path)
 
     if target.is_file():
@@ -1286,7 +1336,9 @@ if __name__ == "__main__":
     print()
 
     threading.Thread(target=open_browser, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    host = os.getenv("BF_HOST", "127.0.0.1")
+    port = int(os.getenv("BF_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 # ─── HuggingFace GGUF поиск ───
 
