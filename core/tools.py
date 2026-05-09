@@ -28,8 +28,8 @@ MAX_COMMANDS_PER_BATCH = 50
 # ============================================================
 
 DEFAULT_PERMISSIONS = {
-    "execute_commands": True,
-    "write_files": True,
+    "execute_commands": False,
+    "write_files": False,
     "delete_files": False,
     "network": False,
     "install_packages": False,
