@@ -8,6 +8,7 @@ import asyncio
 import threading
 import logging
 from typing import Dict, Optional
+from openai import Timeout
 
 from core.brain import Brain
 from core.config import load_config, save_config, list_bots
@@ -377,18 +378,32 @@ class TelegramRunner:
 
         # ======== ЗАПУСК ========
 
-        await self._app.initialize()
-        await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)
-
-        self.is_running = True
-        logger.info(f"🔵 Telegram started for bot {self.bot_id}")
-
-        # ждём остановки
-        while self.is_running:
-            await asyncio.sleep(1)
-
-        await self._shutdown()
+        try:
+            await self._app.initialize()
+            await self._app.start()
+            
+            self.is_running = True
+            logger.info(f"🔵 Telegram started for bot {self.bot_id}")
+            
+            # ✅ с таймаутом и обработкой ошибок
+            try:
+                await asyncio.wait_for(
+                    self._app.updater.start_polling(drop_pending_updates=True),
+                    timeout=None  # Polling живёт долго
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"TG polling timeout {self.bot_id}")
+            except Exception as e:
+                logger.error(f"TG polling error {self.bot_id}: {e}")
+            
+            while self.is_running:
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"TG startup error {self.bot_id}: {type(e).__name__}: {e}")
+        finally:
+            self.is_running = False
+            await self._shutdown()
 
     async def _shutdown(self):
         try:
@@ -474,6 +489,9 @@ class Engine:
     def __init__(self):
         self.instances: Dict[str, BotInstance] = {}
         self._lock = threading.Lock()
+        # ✅ Лимит на параллельные Telegram polling'и
+        self._max_telegram_threads = 50
+        self._active_telegram_threads = 0
 
     def activate_bot(self, bot_id: str) -> bool:
         with self._lock:
@@ -525,18 +543,26 @@ class Engine:
 
     def start_telegram(self, bot_id: str) -> bool:
         with self._lock:
-            if bot_id not in self.instances:
-                pass  # выпадем из lock и активируем
-
-        if bot_id not in self.instances:
-            if not self.activate_bot(bot_id):
+            # ✅ Проверка лимита потоков
+            if self._active_telegram_threads >= self._max_telegram_threads:
+                logger.error(f"Max Telegram threads reached ({self._max_telegram_threads})")
                 return False
-
-        return self.instances[bot_id].start_telegram()
+            
+            if bot_id not in self.instances:
+                if not self.activate_bot(bot_id):
+                    return False
+            
+            success = self.instances[bot_id].start_telegram()
+            if success:
+                self._active_telegram_threads += 1
+            return success
 
     def stop_telegram(self, bot_id: str) -> bool:
         if bot_id not in self.instances:
             return False
+        with self._lock:
+            if self._active_telegram_threads > 0:
+                self._active_telegram_threads -= 1
         self.instances[bot_id].stop_telegram()
         return True
 

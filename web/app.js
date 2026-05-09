@@ -197,6 +197,8 @@ async function deleteLocalModel(modelId) {
 // ====================================================
 
 let dropdownCloseTimer = null;
+let dropdownInteracting = false;
+let dropdownPendingRefresh = null;
 
 function modelSearchOpen(prefix) {
     if (dropdownCloseTimer) { clearTimeout(dropdownCloseTimer); dropdownCloseTimer = null; }
@@ -208,7 +210,9 @@ function modelSearchOpen(prefix) {
 
 function modelSearchClose(prefix) {
     document.getElementById(`${prefix}ModelDropdown`).classList.remove('open');
-    modelSearchActivePrefix = null;
+    if (modelSearchActivePrefix === prefix) {
+        modelSearchActivePrefix = null;
+    }
 }
 
 function modelSearchCloseDelayed(prefix) {
@@ -312,8 +316,10 @@ async function searchOllamaCatalog(prefix, query) {
         const data = await apiSilent('GET', url);
         if (data && data.models) {
             ollamaCatalog = data.models;
-            // перерисовываем с новыми данными
-            modelSearchFilter(prefix);
+            // перерисовываем только если dropdown ещё открыт
+            if (modelSearchActivePrefix === prefix) {
+                modelSearchFilter(prefix);
+            }
         }
     } catch (e) {
         console.error('Ollama catalog search error:', e);
@@ -329,6 +335,11 @@ function formatSizeCompact(gb) {
 }
 
 function renderModelDropdown(prefix, query) {
+    // Если пользователь кликает — не перерисовывать, отложить
+    if (dropdownInteracting) {
+        dropdownPendingRefresh = { prefix, query };
+        return;
+    }
     const dd = document.getElementById(`${prefix}ModelDropdown`);
 
     if (modelSearchFiltered.length === 0) {
@@ -555,14 +566,15 @@ function escapeRegex(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function escapeAttr(str) { return str.replace(/'/g, "\\'").replace(/"/g, '\\"'); }
 
 function modelSearchSelect(prefix, modelId) {
+    console.log("SELECT:", prefix, modelId);
     const allModels = [...models];
     // каталог Ollama — берём из результатов поиска
     ollamaCatalog.forEach(cat => {
         const tagEntries = cat.tags ? Object.entries(cat.tags) : [];
         tagEntries.forEach(([tag, info]) => {
-            const modelId = tag === 'latest' ? cat.model : `${cat.model}:${tag}`;
-            if (!allModels.find(m => m.id === modelId)) {
-                allModels.push({ id: modelId, name: `${cat.model}:${tag}`, price: 'бесплатно', censored: false, _local: true });
+            const catModelId = tag === 'latest' ? cat.model : `${cat.model}:${tag}`;
+            if (!allModels.find(m => m.id === catModelId)) {
+                allModels.push({ id: catModelId, name: `${cat.model}:${tag}`, price: 'бесплатно', censored: false, _local: true });
             }
         });
     });
@@ -643,9 +655,24 @@ document.addEventListener('keydown', (e) => {
 
 // mousedown на dropdown — только предотвращаем потерю фокуса, НЕ обрабатываем клик
 document.addEventListener('mousedown', (e) => {
+    const item = e.target.closest('.model-search-item');
     const dd = e.target.closest('.model-search-dropdown');
+    console.log('MOUSEDOWN:', e.target.tagName, e.target.className, 'item:', !!item, 'dd:', !!dd);
     if (dd) {
         e.preventDefault();
+        dropdownInteracting = true;
+    }
+});
+
+document.addEventListener('mouseup', () => {
+    if (dropdownInteracting) {
+        dropdownInteracting = false;
+        // Если была отложенная перерисовка — выполняем
+        if (dropdownPendingRefresh && modelSearchActivePrefix) {
+            const prefix = modelSearchActivePrefix;
+            dropdownPendingRefresh = null;
+            modelSearchFilter(prefix);
+        }
     }
 });
 
@@ -681,6 +708,7 @@ document.addEventListener('click', (e) => {
 
     // выбор модели
     const item = e.target.closest('.model-search-item');
+    console.log('CLICK check item:', !!item, 'prefix:', modelSearchActivePrefix, 'target:', e.target.tagName, e.target.className);
     if (item && modelSearchActivePrefix) {
         e.preventDefault();
         e.stopPropagation();
@@ -690,10 +718,14 @@ document.addEventListener('click', (e) => {
     }
 
     // клик снаружи — закрываем
-    ['new', 'edit'].forEach(prefix => {
-        const wrap = document.getElementById(`${prefix}ModelWrap`);
-        if (wrap && !wrap.contains(e.target)) {
-            modelSearchClose(prefix);
+    ['new', 'edit'].forEach(pfx => {
+        const wrap = document.getElementById(`${pfx}ModelWrap`);
+        const dd = document.getElementById(`${pfx}ModelDropdown`);
+        const inWrap = wrap && wrap.contains(e.target);
+        const inDd = dd && dd.contains(e.target);
+        console.log('OUTSIDE CHECK:', pfx, 'inWrap:', inWrap, 'inDd:', inDd, 'activePrefix:', modelSearchActivePrefix);
+        if (wrap && !inWrap && !inDd) {
+            modelSearchClose(pfx);
         }
     });
 });

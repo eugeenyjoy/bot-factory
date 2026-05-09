@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
-from openai import OpenAI
+from openai import OpenAI, Timeout
 from core.memory import Memory
 from core.rag import RAG
 from core.config import AI_PROVIDERS
@@ -48,10 +48,12 @@ class Brain:
         else:
             base_url = AI_PROVIDERS["openrouter"]["base_url"]
 
+        # ✅ Увеличенный таймаут для больших ответов
+        timeout = Timeout(60.0, read=120.0, write=120.0)
         self.ai_client = OpenAI(
             base_url=base_url,
             api_key=api_key,
-            timeout=AI_TIMEOUT
+            timeout=timeout
         )
         self.memory = Memory(bot_id)
         self._rag: Optional[RAG] = None
@@ -320,11 +322,20 @@ class Brain:
         prompts_file = Path(f"bots/bot_{self.bot_id}/user_prompts.json")
         try:
             prompts_file.parent.mkdir(parents=True, exist_ok=True)
-            data = {str(k): v for k, v in self._user_prompts.items()}
-            prompts_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding='utf-8'
-            )
+            # ✅ Валидация размера и содержимого
+            data = {}
+            for k, v in self._user_prompts.items():
+                if isinstance(v, list):
+                    # Ограничиваем размер каждого промпта
+                    data[str(k)] = [p[:2000] for p in v if isinstance(p, str)]
+            
+            # Сохраняем безопасно
+            json_str = json.dumps(data, ensure_ascii=False, indent=2)
+            if len(json_str) > 50 * 1024 * 1024:  # 50MB лимит
+                logger.error(f"User prompts too large for {self.bot_id}")
+                return
+            
+            prompts_file.write_text(json_str, encoding='utf-8')
         except OSError as e:
             logger.error(f"Failed to save user prompts {self.bot_id}: {e}")
         except (TypeError, ValueError) as e:

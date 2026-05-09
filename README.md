@@ -41,10 +41,32 @@ bot-factory/
 3. bash setup/install_linux.sh
 4. Открой http://localhost:8000
 
-Docker:
+### Docker:
 
-- cd setup
-- docker compose up --build
+- `cd setup`
+- `docker compose up -d --build`
+
+#### Мониторинг
+
+- `docker ps` - статус
+- `docker logs setup_bot-factory_1` - логи
+- `docker stats` - интерактивный монитор
+- `curl http://localhost:8000` - проверка на ответ
+- `monitor.sh` - скрипт записи монитора docker stats
+  `cat stats_log.csv | sort -t',' -k3 -rn | head -5` - Найти пиковые значения
+
+##### Перезапуск
+
+`docker-compose down`
+`docker-compose up -d`
+
+#### Остановка
+
+`docker-compose down`
+
+##### Чистка
+
+`docker system prune -a`
 
 ## Запуск (после установки)
 

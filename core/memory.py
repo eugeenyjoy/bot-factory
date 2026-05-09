@@ -206,10 +206,28 @@ class Memory:
         if not msg_ids:
             return 0
 
-        # валидация — только int
-        clean_ids = [int(i) for i in msg_ids if isinstance(i, (int, float))]
+        # ✅ СТРОГАЯ валидация
+        clean_ids = []
+        for i in msg_ids:
+            try:
+                msg_id = int(i)
+                if msg_id < 0:
+                    logger.warning(f"Negative msg_id: {msg_id}")
+                    continue
+                if msg_id > 2**63 - 1:  # max int64
+                    logger.warning(f"msg_id too large: {msg_id}")
+                    continue
+                clean_ids.append(msg_id)
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid msg_id type: {i}")
+                continue
+        
         if not clean_ids:
             return 0
+        
+        if len(clean_ids) > 1000:  # лимит на одну операцию
+            logger.warning(f"Too many msg_ids: {len(clean_ids)}")
+            clean_ids = clean_ids[:1000]
 
         with self._lock:
             conn = None

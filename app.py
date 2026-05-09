@@ -154,6 +154,30 @@ class CreateBotRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError('API key cannot be empty')
         return v.strip()
+    
+    @validator('model')
+    def model_valid(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Model cannot be empty')
+        if len(v) > 200:
+            raise ValueError('Model name too long')
+        # Проверяем формат: должен быть либо "provider/model" либо простое имя
+        if not all(c.isalnum() or c in '/-_.' for c in v):
+            raise ValueError('Invalid model name format')
+        return v.strip()
+    
+    @validator('system_prompt')
+    def prompt_valid(cls, v):
+        if v and len(v) > 5000:
+            raise ValueError('System prompt too long (max 5000 chars)')
+        return v
+    
+    @validator('provider')
+    def provider_valid(cls, v):
+        valid = {'openrouter', 'ollama', 'custom'}
+        if v not in valid:
+            raise ValueError(f'Provider must be one of: {valid}')
+        return v
 
 
 class UpdateBotRequest(BaseModel):
@@ -695,8 +719,12 @@ async def local_status():
                             for m in data.get("models", [])
                         ]
                     }
-    except Exception:
-        pass
+    except aiohttp.ClientConnectorError:
+        logger.warning(f"Ollama connection failed: {OLLAMA_BASE}")
+    except asyncio.TimeoutError:
+        logger.debug("Ollama status check timeout")
+    except Exception as e:
+        logger.error(f"Ollama status error: {type(e).__name__}: {e}")
 
     return {
         "available": False,
