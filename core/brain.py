@@ -172,22 +172,22 @@ class Brain:
         return None
 
     def _cmd_help(self) -> dict:
-        lines = ["📋 **Доступные команды:**", ""]
-        lines.append("`/help` — эта справка")
+        lines = ["📋 Доступные команды:", ""]
+        lines.append("/help — эта справка")
 
         if self.permissions.get("user_can_clear_history", True):
-            lines.append("`/clear` — очистить историю чата")
+            lines.append("/clear — очистить историю чата")
 
         if self.permissions.get("user_can_add_prompt", False):
-            lines.append("`/prompt <текст>` — добавить инструкцию боту")
-            lines.append("`/prompt` — показать текущие дополнения")
-            lines.append("`/prompt_clear` — убрать дополнения")
+            lines.append("/prompt <текст> — добавить инструкцию боту")
+            lines.append("/prompt — показать текущие дополнения")
+            lines.append("/prompt_clear — убрать дополнения")
 
         if self.permissions.get("user_can_add_knowledge", False):
-            lines.append("`/learn <текст>` — добавить знания в базу")
-            lines.append("`/knowledge` — инфо о базе знаний")
+            lines.append("/learn <текст> — добавить знания в базу")
+            lines.append("/knowledge — инфо о базе знаний")
 
-        lines.append("`/stats` — статистика")
+        # lines.append("/stats — статистика")
         return {"ok": True, "reply": "\n".join(lines)}
 
     def _cmd_clear(self, chat_id: int) -> dict:
