@@ -100,9 +100,10 @@ class Brain:
         facts = self.memory.get_facts(user_id)
 
         knowledge_context = ""
-        if self._rag and self._rag.chunks:
+        rag = self.rag
+        if rag.chunks:
             try:
-                knowledge_context = self._rag.get_context(message, top_k=self.rag_top_k)
+                knowledge_context = rag.get_context(message, top_k=self.rag_top_k)
             except Exception as e:
                 logger.error(f"RAG search error {self.bot_id}: {type(e).__name__}: {e}")
 
@@ -209,9 +210,10 @@ class Brain:
             f"💬 Сообщений: {stats.get('total_messages', 0)}",
             f"🧠 Модель: {self.model}",
         ]
-        if self._rag and self._rag.chunks:
+        rag = self.rag
+        if rag.chunks:
             try:
-                info = self._rag.get_info()
+                info = rag.get_info()
                 lines.append(
                     f"📚 База знаний: {info.get('total_files', 0)} файлов, "
                     f"{info.get('total_chunks', 0)} чанков"
@@ -294,11 +296,12 @@ class Brain:
             return {"ok": True, "reply": f"❌ Ошибка: {str(e)[:200]}"}
 
     def _cmd_knowledge(self) -> dict:
-        if not self._rag or not self._rag.chunks:
+        rag = self.rag
+        if not rag.chunks:
             return {"ok": True, "reply": "📚 База знаний пуста"}
 
         try:
-            info = self.rag.get_info()
+            info = rag.get_info()
         except Exception as e:
             logger.error(f"Knowledge info error: {e}")
             return {"ok": True, "reply": "❌ Ошибка получения информации"}
@@ -482,35 +485,35 @@ class Brain:
             delete = '✅ удаление' if perms.get('delete_files') else '❌ удаление'
             network = '✅ сеть' if perms.get('network') else '❌ сеть'
 
-            parts.append(f"""
-                🔧 ТЕРМИНАЛ
-                Доступ к реальному терминалу Linux.
-                Режим: {mode_desc.get(mode, mode)}
-                Рабочая директория: {cwd}
+            parts.append(
+                f"""
+🔧 ТЕРМИНАЛ
+Доступ к реальному терминалу Linux.
+Режим: {mode_desc.get(mode, mode)}
+Рабочая директория: {cwd}
 
-                Команды пиши в блоке:
-                ```bash
-                команда
-                Права: {write} | {delete} | {network}
+Команды пиши в блоке:
+```bash
+команда
+```
+Права: {write} | {delete} | {network}
 
-                ПРАВИЛА:
+ПРАВИЛА:
+- ВСЕГДА используй реальные команды для файлов и системы.
+- НИКОГДА не выдумывай содержимое файлов — читай через `cat`.
+- НИКОГДА не утверждай, что нет доступа к терминалу, если он доступен.
+""".strip()
+            )
 
-                ВСЕГДА используй реальные команды для файлов и системы
+        if facts:
+            facts_text = "\n".join(f"- {f}" for f in facts)
+            parts.append(f"\nФакты о пользователе:\n{facts_text}")
+        if user_name:
+            parts.append(f"\nИмя: {user_name}")
+        if knowledge_context:
+            parts.append(f"\n📚 БАЗА ЗНАНИЙ:\n{knowledge_context}")
 
-                НИКОГДА не выдумывай — читай через cat
-
-                НИКОГДА не говори что нет доступа — он ЕСТЬ
-                """)
-
-            if facts:
-                facts_text = "\n".join(f"- {f}" for f in facts)
-                parts.append(f"\nФакты о пользователе:\n{facts_text}")
-            if user_name:
-                parts.append(f"\nИмя: {user_name}")
-            if knowledge_context:
-                parts.append(f"\n📚 БАЗА ЗНАНИЙ:\n{knowledge_context}")
-
-            return "\n".join(parts)
+        return "\n".join(parts)
 
     #============================
     #УПРАВЛЕНИЕ
@@ -540,20 +543,19 @@ class Brain:
             logger.error(f"Memory stats error {self.bot_id}: {e}")
             stats = {}
 
-        if self._rag:
-            try:
-                stats["knowledge"] = self._rag.get_info()
-            except Exception as e:
-                logger.error(f"RAG info error {self.bot_id}: {e}")
-                stats["knowledge"] = {}
+        try:
+            stats["knowledge"] = self.rag.get_info()
+        except Exception as e:
+            logger.error(f"RAG info error {self.bot_id}: {e}")
+            stats["knowledge"] = {}
 
-            try:
-                tool_info = self.tool_executor.get_info()
-                tool_info["enabled"] = self.tools_enabled
-                stats["tools"] = tool_info
-            except Exception as e:
-                logger.error(f"Tools info error {self.bot_id}: {e}")
-                stats["tools"] = {"enabled": self.tools_enabled}
+        try:
+            tool_info = self.tool_executor.get_info()
+            tool_info["enabled"] = self.tools_enabled
+            stats["tools"] = tool_info
+        except Exception as e:
+            logger.error(f"Tools info error {self.bot_id}: {e}")
+            stats["tools"] = {"enabled": self.tools_enabled}
 
         return stats
 
