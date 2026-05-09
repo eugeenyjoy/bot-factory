@@ -41,6 +41,30 @@ async function apiSilent(method, url, body = null) {
     catch (e) { return null; }
 }
 
+function parsePurchaseOptions(text) {
+    const rows = (text || '').split('\n').map(s => s.trim()).filter(Boolean);
+    const options = [];
+    const seen = new Set();
+    for (const row of rows) {
+        const match = row.match(/^(\d+)\s*[:\-xх]\s*(\d+)$/i);
+        if (!match) continue;
+        const messages = parseInt(match[1], 10);
+        const stars = parseInt(match[2], 10);
+        if (!(messages > 0 && stars > 0)) continue;
+        const key = `${messages}:${stars}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        options.push({ messages, stars });
+    }
+    options.sort((a, b) => a.stars - b.stars || a.messages - b.messages);
+    return options;
+}
+
+function formatPurchaseOptions(options) {
+    if (!Array.isArray(options) || options.length === 0) return '';
+    return options.map(o => `${o.messages}:${o.stars}`).join('\n');
+}
+
 // ====================================================
 // МОДЕЛИ — searchable dropdown + избранное + локальные
 // ====================================================
@@ -865,6 +889,10 @@ async function openEditModal(botId) {
         document.getElementById('editFreeMessages').value = config.free_messages || 20;
         document.getElementById('editMsgPerPurchase').value = config.messages_per_purchase || 50;
         document.getElementById('editStarsPrice').value = config.stars_price || 50;
+        const purchaseOptions = Array.isArray(config.purchase_options) && config.purchase_options.length > 0
+            ? config.purchase_options
+            : [{ messages: config.messages_per_purchase || 50, stars: config.stars_price || 50 }];
+        document.getElementById('editPurchaseOptions').value = formatPurchaseOptions(purchaseOptions);
         document.getElementById('webChatLink').href = `/chat/${botId}`;
 
         // провайдер
@@ -953,6 +981,7 @@ async function saveBot() {
         free_messages: parseInt(document.getElementById('editFreeMessages').value) || 20,
         messages_per_purchase: parseInt(document.getElementById('editMsgPerPurchase').value) || 50,
         stars_price: parseInt(document.getElementById('editStarsPrice').value) || 50,
+        purchase_options: [],
         provider: document.getElementById('editProvider').value,
         custom_base_url: document.getElementById('editCustomUrl').value.trim(),
         tools_enabled: document.getElementById('editToolsEnabled').checked,
@@ -970,6 +999,18 @@ async function saveBot() {
             user_can_add_knowledge: document.getElementById('perm_user_can_add_knowledge').checked,
         },
     };
+
+    const parsedOptions = parsePurchaseOptions(document.getElementById('editPurchaseOptions').value);
+    if (parsedOptions.length > 0) {
+        updates.purchase_options = parsedOptions;
+        updates.messages_per_purchase = parsedOptions[0].messages;
+        updates.stars_price = parsedOptions[0].stars;
+    } else {
+        updates.purchase_options = [{
+            messages: updates.messages_per_purchase,
+            stars: updates.stars_price
+        }];
+    }
 
     try {
         await api('PUT', `/api/bots/${currentBotId}`, updates);

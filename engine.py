@@ -121,7 +121,7 @@ class TelegramRunner:
         from telegram import Update
         from telegram.ext import (
             Application, MessageHandler, CommandHandler,
-            PreCheckoutQueryHandler, filters, ContextTypes
+            PreCheckoutQueryHandler, CallbackQueryHandler, filters, ContextTypes
         )
 
         self._app = Application.builder().token(self.token).build()
@@ -129,6 +129,39 @@ class TelegramRunner:
         config = self.config
 
         # ======== ХЭНДЛЕРЫ ========
+        def _session_chat_id(update: Update) -> int:
+            """Единый ключ истории: в личке = user_id (как в web), в группах = chat_id."""
+            if update.effective_chat and update.effective_chat.type == "private":
+                return update.effective_user.id
+            return update.effective_chat.id
+
+        def _purchase_options():
+            """Список пакетов покупки из конфига с fallback на legacy-поля."""
+            options = config.get("purchase_options")
+            normalized = []
+            if isinstance(options, list):
+                for item in options:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        msgs = int(item.get("messages", 0))
+                        stars = int(item.get("stars", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if msgs > 0 and stars > 0:
+                        normalized.append({"messages": msgs, "stars": stars})
+
+            if not normalized:
+                normalized = [{
+                    "messages": int(config.get("messages_per_purchase", 50) or 50),
+                    "stars": int(config.get("stars_price", 50) or 50),
+                }]
+
+            # удаляем дубли и сортируем по возрастанию цены
+            dedup = {}
+            for o in normalized:
+                dedup[(o["messages"], o["stars"])] = o
+            return sorted(dedup.values(), key=lambda x: (x["stars"], x["messages"]))
 
         async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             name = config["name"]
@@ -144,7 +177,7 @@ class TelegramRunner:
             )
 
         async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-            brain.clear_chat(update.effective_chat.id)
+            brain.clear_chat(_session_chat_id(update))
             await update.message.reply_text("🗑️ История очищена!")
 
         async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -167,20 +200,66 @@ class TelegramRunner:
                 await update.message.reply_text("⚠️ Ошибка получения баланса")
 
         async def cmd_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-            from telegram import LabeledPrice
-            price = config.get("stars_price", 50)
-            msgs = config.get("messages_per_purchase", 50)
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            options = _purchase_options()
+            lines = ["💎 Пакеты сообщений:", ""]
+            kb = []
+            for o in options:
+                msgs = o["messages"]
+                stars = o["stars"]
+                lines.append(f"• {msgs} сообщений — {stars} ⭐")
+                kb.append([
+                    InlineKeyboardButton(
+                        text=f"{msgs} за {stars}⭐",
+                        callback_data=f"buy:{msgs}:{stars}"
+                    )
+                ])
+            lines.append("")
+            lines.append("Выберите пакет кнопкой ниже 👇")
             try:
-                await update.message.reply_invoice(
-                    title=f"📦 {msgs} сообщений",
-                    description=f"Пакет из {msgs} сообщений",
-                    payload=f"buy_{msgs}",
-                    currency="XTR",
-                    prices=[LabeledPrice(label="Сообщения", amount=price)]
+                await update.message.reply_text(
+                    "\n".join(lines),
+                    reply_markup=InlineKeyboardMarkup(kb)
                 )
             except Exception as e:
                 logger.error(f"TG buy error: {type(e).__name__}: {e}")
                 await update.message.reply_text("⚠️ Ошибка создания платежа")
+
+        async def on_buy_click(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+            from telegram import LabeledPrice
+            query = update.callback_query
+            if not query:
+                return
+            await query.answer()
+
+            data = query.data or ""
+            if not data.startswith("buy:"):
+                return
+
+            try:
+                _, msgs_s, stars_s = data.split(":")
+                msgs = int(msgs_s)
+                stars = int(stars_s)
+            except (ValueError, TypeError):
+                await query.message.reply_text("⚠️ Некорректный пакет")
+                return
+
+            valid = any(o["messages"] == msgs and o["stars"] == stars for o in _purchase_options())
+            if not valid:
+                await query.message.reply_text("⚠️ Пакет устарел. Введите /buy снова")
+                return
+
+            try:
+                await query.message.reply_invoice(
+                    title=f"📦 {msgs} сообщений",
+                    description=f"Пакет из {msgs} сообщений",
+                    payload=f"buy:{msgs}:{stars}",
+                    currency="XTR",
+                    prices=[LabeledPrice(label=f"{msgs} сообщений", amount=stars)]
+                )
+            except Exception as e:
+                logger.error(f"TG buy invoice error: {type(e).__name__}: {e}")
+                await query.message.reply_text("⚠️ Ошибка создания инвойса")
 
         async def pre_checkout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.pre_checkout_query.answer(ok=True)
@@ -188,7 +267,17 @@ class TelegramRunner:
         async def on_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 payment = update.message.successful_payment
-                msgs = config.get("messages_per_purchase", 50)
+                payload = payment.invoice_payload or ""
+                msgs = int(config.get("messages_per_purchase", 50) or 50)
+                if payload.startswith("buy:"):
+                    try:
+                        _, msgs_s, stars_s = payload.split(":")
+                        cand_msgs = int(msgs_s)
+                        cand_stars = int(stars_s)
+                        if payment.total_amount == cand_stars:
+                            msgs = cand_msgs
+                    except (ValueError, TypeError):
+                        pass
                 brain.add_purchased(
                     user_id=update.effective_user.id,
                     messages=msgs,
@@ -210,7 +299,7 @@ class TelegramRunner:
             text = update.message.text or ""
             try:
                 result = brain.chat(
-                    chat_id=update.effective_chat.id,
+                    chat_id=_session_chat_id(update),
                     user_id=update.effective_user.id,
                     message=text,
                     user_name=update.effective_user.first_name
@@ -253,7 +342,7 @@ class TelegramRunner:
 
             try:
                 result = brain.chat(
-                    chat_id=update.effective_chat.id,
+                    chat_id=_session_chat_id(update),
                     user_id=update.effective_user.id,
                     message=update.message.text,
                     user_name=update.effective_user.first_name
@@ -270,11 +359,11 @@ class TelegramRunner:
             if result.get("ok") is not False and result.get("reply"):
                 await _send_long(update, result["reply"])
             elif result.get("error") == "limit":
-                price = config.get("stars_price", 50)
-                msgs = config.get("messages_per_purchase", 50)
+                options = _purchase_options()
+                preview = options[0]
                 await update.message.reply_text(
                     f"📭 Лимит исчерпан!\n\n"
-                    f"💎 /buy — купить {msgs} сообщений за {price} ⭐"
+                    f"💎 /buy — купить сообщения (напр. {preview['messages']} за {preview['stars']} ⭐)"
                 )
             else:
                 error_msg = result.get("error", "unknown")
@@ -361,6 +450,7 @@ class TelegramRunner:
         self._app.add_handler(CommandHandler("reset", cmd_reset))
         self._app.add_handler(CommandHandler("balance", cmd_balance))
         self._app.add_handler(CommandHandler("buy", cmd_buy))
+        self._app.add_handler(CallbackQueryHandler(on_buy_click, pattern=r"^buy:"))
         self._app.add_handler(PreCheckoutQueryHandler(pre_checkout))
 
         for cmd in ["help", "prompt", "prompt_clear", "learn",

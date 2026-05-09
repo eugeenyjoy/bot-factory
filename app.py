@@ -234,6 +234,7 @@ class UpdateBotRequest(BaseModel):
     free_messages: Optional[int] = None
     stars_price: Optional[int] = None
     messages_per_purchase: Optional[int] = None
+    purchase_options: Optional[list] = None
     enable_telegram: Optional[bool] = None
     enable_groups: Optional[bool] = None
     enable_web_chat: Optional[bool] = None
@@ -255,6 +256,25 @@ class UpdateBotRequest(BaseModel):
         if v is not None and v < 0:
             raise ValueError('free_messages must be >= 0')
         return v
+
+    @validator('purchase_options')
+    def purchase_options_valid(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError('purchase_options must be a list')
+        if len(v) > 20:
+            raise ValueError('purchase_options max 20 items')
+        clean = []
+        for item in v:
+            if not isinstance(item, dict):
+                raise ValueError('each purchase option must be an object')
+            msgs = int(item.get('messages', 0))
+            stars = int(item.get('stars', 0))
+            if msgs <= 0 or stars <= 0:
+                raise ValueError('messages and stars must be > 0')
+            clean.append({'messages': msgs, 'stars': stars})
+        return clean
 
 
 class VipRequest(BaseModel):

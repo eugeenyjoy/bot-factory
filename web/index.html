@@ -307,10 +307,17 @@
             <div class="form-group">
                 <label>💬 Сообщений за покупку</label>
                 <input type="number" id="editMsgPerPurchase" min="1" value="50">
+                <div class="form-hint">Legacy-поле для совместимости</div>
             </div>
             <div class="form-group">
                 <label>⭐ Цена в Stars</label>
                 <input type="number" id="editStarsPrice" min="1" value="50">
+                <div class="form-hint">Legacy-поле для совместимости</div>
+            </div>
+            <div class="form-group">
+                <label>🧾 Пакеты покупки (сообщения:звёзды)</label>
+                <textarea id="editPurchaseOptions" rows="4" placeholder="1:1&#10;10:10&#10;50:50"></textarea>
+                <div class="form-hint">Один пакет на строку. Пример: 1:1, 10:10, 100:80</div>
             </div>
         </div>
 

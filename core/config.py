@@ -98,6 +98,9 @@ DEFAULT_CONFIG = {
     "free_messages": 20,
     "stars_price": 50,
     "messages_per_purchase": 50,
+    "purchase_options": [
+        {"messages": 50, "stars": 50}
+    ],
     "is_running": False,
     "enable_telegram": False,
     "enable_groups": False,
