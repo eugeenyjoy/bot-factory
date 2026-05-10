@@ -5,12 +5,49 @@ services:
     build:
       context: ..
       dockerfile: setup/Dockerfile
+    container_name: bot-factory
+
+    # Портов
     ports:
       - "8000:8000"
+
+    # Переменные окружения
+    environment:
+      - BF_HOST=0.0.0.0
+      - BF_PORT=8000
+      - BF_ALLOW_REMOTE=0
+      # - BF_ADMIN_TOKEN=your-secret-token
+      # - BF_ENABLE_SYSTEM_FILES_API=0
+
+    # Тома для сохранения данных между перезапусками
     volumes:
-      - ../bots:/app/bots
+      - ./bots:/app/bots:rw
+      - ./ollama_data:/app/ollama_data:rw
+
+    # Политика перезапуска
     restart: unless-stopped
 
-    # Лимиты
-    mem_limit: 512m
-    cpus: 1.0
+    # Ограничения ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "1"
+          memory: 512M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Логирование
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

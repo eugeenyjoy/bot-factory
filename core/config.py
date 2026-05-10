@@ -106,6 +106,12 @@ DEFAULT_CONFIG = {
     "enable_groups": False,
     "enable_web_chat": False,
     "vip_users": [],
+    "vip_features": {
+        "unlimited_messages": True,
+        "can_add_prompt": False,
+        "can_add_knowledge": False,
+        "can_clear_history": True,
+    },
     # RAG
     "rag_chunk_size": 500,
     "rag_chunk_overlap": 50,

@@ -47,6 +47,7 @@ def _build_brain(config: dict) -> Brain:
         access_mode=config.get("access_mode", "sandbox"),
         working_directory=config.get("working_directory", ""),
         max_tool_rounds=config.get("max_tool_rounds", 15),
+        vip_features=config.get("vip_features"),
     )
 
 
@@ -182,11 +183,12 @@ class TelegramRunner:
 
         async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
+                vip_unlimited = brain.vip_unlimited_messages(update.effective_user.id)
                 remaining = brain.memory.get_remaining(
-                    update.effective_user.id, brain.free_messages
+                    update.effective_user.id, brain.free_messages, vip_unlimited=vip_unlimited
                 )
                 user = brain.memory.get_or_create_user(update.effective_user.id)
-                if user.get("is_vip"):
+                if user.get("is_vip") and vip_unlimited:
                     await update.message.reply_text("👑 VIP — безлимит!")
                 else:
                     await update.message.reply_text(
@@ -285,7 +287,9 @@ class TelegramRunner:
                     source="telegram"
                 )
                 remaining = brain.memory.get_remaining(
-                    update.effective_user.id, brain.free_messages
+                    update.effective_user.id,
+                    brain.free_messages,
+                    vip_unlimited=brain.vip_unlimited_messages(update.effective_user.id)
                 )
                 await update.message.reply_text(
                     f"✅ Оплачено! +{msgs} сообщений\nБаланс: {remaining}"
@@ -372,12 +376,7 @@ class TelegramRunner:
 
         async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             """Загрузка файла как знания"""
-            try:
-                perms = brain.permissions
-            except AttributeError:
-                perms = {}
-
-            if not perms.get("user_can_add_knowledge", False):
+            if not brain.can_user_feature(update.effective_user.id, "add_knowledge"):
                 await update.message.reply_text("🚫 Загрузка файлов отключена")
                 return
 
@@ -570,6 +569,7 @@ class BotInstance:
             if config.get("tool_permissions"):
                 self.brain.update_tool_permissions(config["tool_permissions"])
             self.brain.set_tools_enabled(config.get("tools_enabled", True))
+            self.brain.update_vip_features(config.get("vip_features", {}))
 
         logger.info(f"♻️ Bot {self.bot_id} config reloaded")
 

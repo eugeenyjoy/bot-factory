@@ -242,6 +242,7 @@ class UpdateBotRequest(BaseModel):
     custom_base_url: Optional[str] = None
     tools_enabled: Optional[bool] = None
     tool_permissions: Optional[dict] = None
+    vip_features: Optional[dict] = None
     allowed_paths: Optional[list] = None
     blocked_paths: Optional[list] = None
 
@@ -275,6 +276,20 @@ class UpdateBotRequest(BaseModel):
                 raise ValueError('messages and stars must be > 0')
             clean.append({'messages': msgs, 'stars': stars})
         return clean
+
+    @validator('vip_features')
+    def vip_features_valid(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            raise ValueError('vip_features must be an object')
+        allowed = {"unlimited_messages", "can_add_prompt", "can_add_knowledge", "can_clear_history"}
+        for key, value in v.items():
+            if key not in allowed:
+                raise ValueError(f'Unknown vip feature: {key}')
+            if not isinstance(value, bool):
+                raise ValueError(f'vip feature "{key}" must be boolean')
+        return v
 
 
 class VipRequest(BaseModel):
@@ -627,8 +642,7 @@ def api_upload_file(bot_id: str, req: UploadFileRequest):
 
     # проверка прав для юзеров
     if req.source == "user":
-        perms = brain.permissions
-        if not perms.get("user_can_add_knowledge", False):
+        if not brain.can_user_feature(None, "add_knowledge"):
             return {"ok": False, "error": "Загрузка знаний отключена администратором"}
 
     try:
@@ -664,8 +678,7 @@ def api_add_text(bot_id: str, req: AddTextRequest):
     brain = get_brain_or_fail(bot_id)
 
     if req.source == "user":
-        perms = brain.permissions
-        if not perms.get("user_can_add_knowledge", False):
+        if not brain.can_user_feature(None, "add_knowledge"):
             return {"ok": False, "error": "Загрузка знаний отключена"}
 
     source_prefix = "📋" if req.source == "admin" else "👤"

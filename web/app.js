@@ -893,6 +893,11 @@ async function openEditModal(botId) {
             ? config.purchase_options
             : [{ messages: config.messages_per_purchase || 50, stars: config.stars_price || 50 }];
         document.getElementById('editPurchaseOptions').value = formatPurchaseOptions(purchaseOptions);
+        const vipFeatures = config.vip_features || {};
+        document.getElementById('vip_unlimited_messages').checked = vipFeatures.unlimited_messages !== false;
+        document.getElementById('vip_can_add_prompt').checked = !!vipFeatures.can_add_prompt;
+        document.getElementById('vip_can_add_knowledge').checked = !!vipFeatures.can_add_knowledge;
+        document.getElementById('vip_can_clear_history').checked = vipFeatures.can_clear_history !== false;
         document.getElementById('webChatLink').href = `/chat/${botId}`;
 
         // провайдер
@@ -997,6 +1002,12 @@ async function saveBot() {
             user_can_clear_history: document.getElementById('perm_user_can_clear_history').checked,
             user_can_add_prompt: document.getElementById('perm_user_can_add_prompt').checked,
             user_can_add_knowledge: document.getElementById('perm_user_can_add_knowledge').checked,
+        },
+        vip_features: {
+            unlimited_messages: document.getElementById('vip_unlimited_messages').checked,
+            can_add_prompt: document.getElementById('vip_can_add_prompt').checked,
+            can_add_knowledge: document.getElementById('vip_can_add_knowledge').checked,
+            can_clear_history: document.getElementById('vip_can_clear_history').checked,
         },
     };
 

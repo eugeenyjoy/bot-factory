@@ -29,7 +29,8 @@ class Brain:
                  tool_permissions: dict = None, allowed_paths: list = None,
                  blocked_paths: list = None, tools_enabled: bool = True,
                  access_mode: str = "sandbox", working_directory: str = "",
-                 max_tool_rounds: int = DEFAULT_MAX_ROUNDS):
+                 max_tool_rounds: int = DEFAULT_MAX_ROUNDS,
+                 vip_features: dict = None):
 
         self.bot_id = bot_id
         self.model = model
@@ -40,6 +41,14 @@ class Brain:
         self.provider = provider
         self.tools_enabled = tools_enabled
         self.max_tool_rounds = max_tool_rounds
+        self.vip_features = {
+            "unlimited_messages": True,
+            "can_add_prompt": False,
+            "can_add_knowledge": False,
+            "can_clear_history": True,
+        }
+        if isinstance(vip_features, dict):
+            self.vip_features.update(vip_features)
 
         if provider == "custom" and custom_base_url:
             base_url = custom_base_url
@@ -92,8 +101,11 @@ class Brain:
         if cmd_result:
             return cmd_result
 
-        if not self.memory.can_send(user_id, self.free_messages):
-            remaining = self.memory.get_remaining(user_id, self.free_messages)
+        vip_unlimited = self._vip_feature_enabled(user_id, "unlimited_messages")
+        if not self.memory.can_send(user_id, self.free_messages, vip_unlimited=vip_unlimited):
+            remaining = self.memory.get_remaining(
+                user_id, self.free_messages, vip_unlimited=vip_unlimited
+            )
             return {"ok": False, "error": "limit", "remaining": remaining}
 
         history = self.memory.get_history(chat_id, self.max_history)
@@ -123,7 +135,11 @@ class Brain:
             self.memory.save_message(chat_id, user_id, "assistant", reply)
             self.memory.use_message(user_id)
 
-            remaining = self.memory.get_remaining(user_id, self.free_messages)
+            remaining = self.memory.get_remaining(
+                user_id,
+                self.free_messages,
+                vip_unlimited=vip_unlimited
+            )
             result = {"ok": True, "reply": reply, "remaining": remaining}
             if tool_log:
                 result["tools_used"] = tool_log
@@ -156,7 +172,7 @@ class Brain:
         if cmd == '/help':
             return self._cmd_help()
         elif cmd == '/clear':
-            return self._cmd_clear(chat_id)
+            return self._cmd_clear(chat_id, user_id)
         elif cmd == '/stats':
             return self._cmd_stats(user_id)
         elif cmd == '/prompt':
@@ -171,27 +187,55 @@ class Brain:
         # неизвестная команда — пусть AI обработает
         return None
 
+    def _is_vip(self, user_id: Optional[int]) -> bool:
+        if user_id is None:
+            return False
+        user = self.memory.get_or_create_user(user_id)
+        return bool(user.get("is_vip"))
+
+    def _vip_feature_enabled(self, user_id: Optional[int], feature: str) -> bool:
+        return self._is_vip(user_id) and bool(self.vip_features.get(feature, False))
+
+    def _can_user(self, base_perm: str, vip_feature: str,
+                  default: bool = False, user_id: Optional[int] = None) -> bool:
+        base_enabled = self.permissions.get(base_perm, default)
+        return bool(base_enabled) or self._vip_feature_enabled(user_id, vip_feature)
+
+    def can_user_feature(self, user_id: Optional[int], feature: str) -> bool:
+        mapping = {
+            "add_prompt": ("user_can_add_prompt", "can_add_prompt", False),
+            "add_knowledge": ("user_can_add_knowledge", "can_add_knowledge", False),
+            "clear_history": ("user_can_clear_history", "can_clear_history", True),
+        }
+        if feature not in mapping:
+            return False
+        base_perm, vip_feature, default = mapping[feature]
+        return self._can_user(base_perm, vip_feature, default, user_id)
+
+    def vip_unlimited_messages(self, user_id: Optional[int]) -> bool:
+        return self._vip_feature_enabled(user_id, "unlimited_messages")
+
     def _cmd_help(self) -> dict:
         lines = ["📋 Доступные команды:", ""]
         lines.append("/help — эта справка")
 
-        if self.permissions.get("user_can_clear_history", True):
+        if self._can_user("user_can_clear_history", "can_clear_history", True):
             lines.append("/clear — очистить историю чата")
 
-        if self.permissions.get("user_can_add_prompt", False):
+        if self._can_user("user_can_add_prompt", "can_add_prompt", False):
             lines.append("/prompt <текст> — добавить инструкцию боту")
             lines.append("/prompt — показать текущие дополнения")
             lines.append("/prompt_clear — убрать дополнения")
 
-        if self.permissions.get("user_can_add_knowledge", False):
+        if self._can_user("user_can_add_knowledge", "can_add_knowledge", False):
             lines.append("/learn <текст> — добавить знания в базу")
             lines.append("/knowledge — инфо о базе знаний")
 
         # lines.append("/stats — статистика")
         return {"ok": True, "reply": "\n".join(lines)}
 
-    def _cmd_clear(self, chat_id: int) -> dict:
-        if not self.permissions.get("user_can_clear_history", True):
+    def _cmd_clear(self, chat_id: int, user_id: Optional[int] = None) -> dict:
+        if not self._can_user("user_can_clear_history", "can_clear_history", True, user_id):
             return {"ok": True, "reply": "🚫 Очистка истории отключена"}
         self.memory.clear_history(chat_id)
         return {"ok": True, "reply": "🗑️ История чата очищена"}
@@ -227,7 +271,7 @@ class Brain:
         return {"ok": True, "reply": "\n".join(lines)}
 
     def _cmd_prompt(self, user_id: int, arg: str) -> dict:
-        if not self.permissions.get("user_can_add_prompt", False):
+        if not self._can_user("user_can_add_prompt", "can_add_prompt", False, user_id):
             return {"ok": True, "reply": "🚫 Добавление промптов отключено администратором"}
 
         if not arg:
@@ -265,14 +309,14 @@ class Brain:
         )}
 
     def _cmd_prompt_clear(self, user_id: int) -> dict:
-        if not self.permissions.get("user_can_add_prompt", False):
+        if not self._can_user("user_can_add_prompt", "can_add_prompt", False, user_id):
             return {"ok": True, "reply": "🚫 Управление промптами отключено"}
         self._user_prompts.pop(user_id, None)
         self._save_user_prompts()
         return {"ok": True, "reply": "🗑️ Все ваши дополнения к промпту удалены"}
 
     def _cmd_learn(self, user_id: int, arg: str) -> dict:
-        if not self.permissions.get("user_can_add_knowledge", False):
+        if not self._can_user("user_can_add_knowledge", "can_add_knowledge", False, user_id):
             return {"ok": True, "reply": "🚫 Добавление знаний отключено администратором"}
 
         if not arg:
@@ -577,3 +621,8 @@ class Brain:
 
     def set_tools_enabled(self, enabled: bool):
         self.tools_enabled = bool(enabled)
+
+    def update_vip_features(self, vip_features: dict):
+        if not isinstance(vip_features, dict):
+            return
+        self.vip_features.update(vip_features)
